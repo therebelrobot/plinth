@@ -1,0 +1,11 @@
+services:
+  plinth:
+    image: ghcr.io/therebelrobot/plinth:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    # The image runs as the `node` user (uid 1000). If ./data is owned by
+    # someone else on the host, either chown it to 1000 or set user: below.
+    # user: "1000:1000"

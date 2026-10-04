@@ -1,0 +1,42 @@
+{
+  "name": "plinth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted isometric scene blocking for pixel art — compose primitives, export pixel-exact templates for Procreate.",
+  "license": "Unlicense",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "tsx watch server/main.ts",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "vite build",
+    "build:server": "esbuild server/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/server.mjs",
+    "start": "node dist/server.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "docker:build": "docker build -t ghcr.io/therebelrobot/plinth:latest -t ghcr.io/therebelrobot/plinth:$npm_package_version .",
+    "docker:run": "docker run --rm -p 3000:3000 -v plinth-data:/data ghcr.io/therebelrobot/plinth:latest",
+    "docker:push": "docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/therebelrobot/plinth:latest -t ghcr.io/therebelrobot/plinth:$npm_package_version --push .",
+    "release:patch": "npm version patch -m 'release: %s' && npm run release:tags",
+    "release:minor": "npm version minor -m 'release: %s' && npm run release:tags",
+    "release:major": "npm version major -m 'release: %s' && npm run release:tags",
+    "release:tags": "git push --follow-tags"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}
