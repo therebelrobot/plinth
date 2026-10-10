@@ -12,7 +12,8 @@ import {
 } from '../src/core/tileset';
 import { DEFAULT_RENDER_OPTIONS, DEFAULT_SETTINGS, type RenderOptions, type SceneDocument, type SceneObject } from '../src/core/types';
 import { readZip, createZip } from '../src/core/zip';
-import { importTilesetBytes } from '../src/lib/tileset';
+import { exportTileset, importTilesetBytes } from '../src/lib/tileset';
+import { decodePng, encodePng } from './png-node';
 
 const OPTIONS: RenderOptions = { ...DEFAULT_RENDER_OPTIONS, showFloor: false, showFloorGrid: false };
 
@@ -159,4 +160,68 @@ test('directional faces are rotated at import (non-square sprite swaps dimension
   assert.equal(turned.image.height, 10);
   assert.equal(turned.anchorX, 10); // h - anchorY = 20 - 10
   assert.equal(turned.anchorY, 5);
+});
+
+test('export → import → compose round-trips real PNG bytes (Feature 10)', async () => {
+  const document = singleBlockDocument();
+
+  // Export with the real node:zlib PNG encoder (not a fake).
+  const { blob, manifest } = await exportTileset(document, OPTIONS, 1, encodePng, new Date('2026-01-01T00:00:00Z'));
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+
+  // Import with the real PNG decoder (parses IHDR/IDAT, inflates, un-filters).
+  const warnings: string[] = [];
+  const imported = await importTilesetBytes(bytes, async (data) => decodePng(data), (message) => warnings.push(message));
+  assert.deepEqual(warnings, []);
+
+  // The decoder read the real IHDR: dimensions match the manifest's declaration.
+  const face = imported.ref.manifest.faces[0];
+  const declared = face.sprites.c00;
+  const decoded = imported.sprites.get(face.slug)!.get('c00')!;
+  assert.equal(decoded.width, declared.width);
+  assert.equal(decoded.height, declared.height);
+  assert.equal(decoded.width, manifest.faces[0].sprites.c00.width);
+
+  // The exported sprite is a grey template with opaque pixels.
+  let opaque = 0;
+  for (let index = 0; index < decoded.width * decoded.height; index++) {
+    if (decoded.data[index * 4 + 3] === 0) continue;
+    opaque++;
+    assert.equal(decoded.data[index * 4], decoded.data[index * 4 + 1]);
+    assert.equal(decoded.data[index * 4 + 1], decoded.data[index * 4 + 2]);
+  }
+  assert.ok(opaque > 0, 'the exported sprite has opaque pixels');
+
+  // Compose the imported tileset over the scene: the sprite replaces grey on owned
+  // pixels and leaves the background untouched.
+  const buffers = renderScene(document.settings, document.objects, OPTIONS);
+  const placements = buildTilesetPlacements(document.objects, imported.ref.manifest, imported.sprites);
+  const composed = composeImage(buffers, OPTIONS, document.settings, { tileset: placements });
+  const baseline = composeImage(buffers, OPTIONS, document.settings, {});
+
+  let changed = 0;
+  for (let index = 0; index < buffers.width * buffers.height; index++) {
+    const offset = index * 4;
+    const same = composed[offset] === baseline[offset]
+      && composed[offset + 1] === baseline[offset + 1]
+      && composed[offset + 2] === baseline[offset + 2]
+      && composed[offset + 3] === baseline[offset + 3];
+    if (buffers.owner[index] < 0) assert.ok(same, `background pixel ${index} is unchanged`);
+    else if (!same) changed++;
+  }
+  assert.ok(changed > 0, 'the imported sprite changed at least one owned pixel');
+});
+
+test('a sprite whose PNG size disagrees with the manifest is skipped with a warning', async () => {
+  const manifest = manifestFor({ slug: 'block_1x1x1', type: 'block' }, { type: 'block', width: 1, depth: 1, height: 1 }, { c00: { anchorX: 16, anchorY: 16 } });
+  const zip = createZip([
+    { name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest)) },
+    { name: 'tiles/block_1x1x1/c00.png', data: new Uint8Array([0]) },
+  ]);
+  const warnings: string[] = [];
+  // The manifest declares 32×32; the decoder returns 16×16 → mismatch → skip.
+  const decode = async () => ({ width: 16, height: 16, data: new Uint8ClampedArray(16 * 16 * 4) });
+  const imported = await importTilesetBytes(zip, decode, (message) => warnings.push(message));
+  assert.equal(imported.sprites.get('block_1x1x1')!.size, 0);
+  assert.ok(warnings.some((message) => /size does not match/.test(message)), 'a size-mismatch warning is emitted');
 });
