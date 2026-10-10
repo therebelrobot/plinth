@@ -14,6 +14,7 @@
 //
 // Pure TypeScript, no DOM: the same code runs in the browser and in node tests.
 
+import type { CornerPost } from './geometry';
 import { DIRECTIONAL_TYPES } from './primitives';
 import type { CombinatoricsSet, PrimitiveType, SceneDocument, SceneObject } from './types';
 
@@ -452,4 +453,144 @@ export function analyseAdjacency(objects: SceneObject[]): Adjacency {
 /** Convenience wrapper: just the neighbour mask per object. */
 export function neighbourMasks(objects: SceneObject[]): number[] {
   return analyseAdjacency(objects).masks;
+}
+
+// ── Wall corner joins (Feature 4) ─────────────────────────────────────────────
+//
+// `abuttingDirection` only connects walls whose footprints abut edge-to-edge
+// (matching edge length). Two perpendicular walls meeting at a corner overlap in
+// a thickness×thickness post instead, so they never register there and the edge
+// pass draws a seam at the inner corner. These helpers detect that corner case
+// from the walls' *solid slabs* and describe the mitre post each wall needs.
+
+/** World-space AABB of a wall's solid slab (the thin part, not the whole footprint). */
+export interface SlabBounds {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+/** A wall's slab thickness in tiles (its `parameter`, clamped to the footprint). */
+function wallThickness(object: SceneObject): number {
+  const swapped = object.rotation % 2 === 1;
+  const a = swapped ? object.depth : object.width;
+  return Math.min(object.parameter ?? 0, a);
+}
+
+/** A wall's run length in tiles (the extent along its canonical y). */
+function wallRunLength(object: SceneObject): number {
+  const swapped = object.rotation % 2 === 1;
+  return swapped ? object.width : object.depth;
+}
+
+/**
+ * The world AABB of a wall's solid slab. A wall is anchored to one edge of its
+ * footprint (low-x at rotation 0, low-y at 1, high-x at 2, high-y at 3) and spans
+ * the full run length along the other axis.
+ */
+export function wallSlabBounds(object: SceneObject): SlabBounds {
+  const thickness = wallThickness(object);
+  switch (object.rotation) {
+    case 1: return { x0: object.x, x1: object.x + object.width, y0: object.y, y1: object.y + thickness };
+    case 2: return { x0: object.x + object.width - thickness, x1: object.x + object.width, y0: object.y, y1: object.y + object.depth };
+    case 3: return { x0: object.x, x1: object.x + object.width, y0: object.y + object.depth - thickness, y1: object.y + object.depth };
+    default: return { x0: object.x, x1: object.x + thickness, y0: object.y, y1: object.y + object.depth };
+  }
+}
+
+/** Map a world point into an object's canonical frame (inverse of the rasteriser's rotation). */
+function worldToCanonical(object: SceneObject, wx: number, wy: number): [number, number] {
+  const u = wx - object.x, v = wy - object.y;
+  switch (object.rotation) {
+    case 1: return [v, object.width - u];
+    case 2: return [object.width - u, object.depth - v];
+    case 3: return [object.depth - v, u];
+    default: return [u, v];
+  }
+}
+
+export interface WallCornerJoin {
+  /** Index of the perpendicular neighbour wall. */
+  neighbour: number;
+  /** Which end of this wall's run the corner is at: 0 = low canonical y, 1 = high. */
+  end: 0 | 1;
+  /** The neighbour's thickness in tiles — the mitre depth. */
+  thickness: number;
+  /** The full-height post to union with this wall's slab, in canonical coordinates. */
+  post: CornerPost;
+}
+
+export interface WallCornerAdjacency {
+  /** Pair keys `a * stride + b` (both orders) for corner-joined walls. */
+  pairs: Set<number>;
+  /** Per-object corner joins, index-aligned to the input. */
+  joins: WallCornerJoin[][];
+}
+
+/**
+ * Describe the corner join from wall `a` to wall `b`, or `null` when they are not
+ * perpendicular corner neighbours. `b`'s slab is mapped into `a`'s canonical frame;
+ * the join is valid when it reaches `a`'s thickness band and touches one end of
+ * `a`'s run. The post spans `a`'s thickness and runs from `a`'s edge out to `b`,
+ * so the two solids overlap and the union is flush (spec §4(b)(2)).
+ */
+function cornerJoinFor(a: SceneObject, b: SceneObject, bIndex: number): WallCornerJoin | null {
+  const aThickness = wallThickness(a);
+  const aRun = wallRunLength(a);
+  const bounds = wallSlabBounds(b);
+  const corners = [
+    worldToCanonical(a, bounds.x0, bounds.y0),
+    worldToCanonical(a, bounds.x1, bounds.y0),
+    worldToCanonical(a, bounds.x0, bounds.y1),
+    worldToCanonical(a, bounds.x1, bounds.y1),
+  ];
+  const bx0 = Math.min(corners[0][0], corners[1][0], corners[2][0], corners[3][0]);
+  const bx1 = Math.max(corners[0][0], corners[1][0], corners[2][0], corners[3][0]);
+  const by0 = Math.min(corners[0][1], corners[1][1], corners[2][1], corners[3][1]);
+  const by1 = Math.max(corners[0][1], corners[1][1], corners[2][1], corners[3][1]);
+  // Must reach into a's thickness band.
+  if (Math.min(aThickness, bx1) < Math.max(0, bx0) - ADJACENCY_TOLERANCE) return null;
+  // Must touch one end of a's run (a corner, not a mid-run crossing).
+  const atLow = by0 <= ADJACENCY_TOLERANCE;
+  const atHigh = by1 >= aRun - ADJACENCY_TOLERANCE;
+  if (!atLow && !atHigh) return null;
+  const end: 0 | 1 = atLow ? 0 : 1;
+  const post: CornerPost = {
+    x0: 0,
+    x1: aThickness,
+    y0: end === 0 ? Math.min(by0, 0) : Math.min(by0, aRun),
+    y1: end === 0 ? Math.max(by1, 0) : Math.max(by1, aRun),
+  };
+  return { neighbour: bIndex, end, thickness: wallThickness(b), post };
+}
+
+/**
+ * Derive the perpendicular corner joins between walls: the connected pairs (for
+ * the edge pass) and the per-object mitre posts (for the wall union). Parallel
+ * walls are left to `analyseAdjacency`; only perpendicular corners are handled
+ * here. Matching `z`/`height` is required so unequal walls still show a step.
+ */
+export function analyseWallCorners(objects: SceneObject[]): WallCornerAdjacency {
+  const joins: WallCornerJoin[][] = objects.map(() => []);
+  const pairs = new Set<number>();
+  const stride = pairStride(objects.length);
+  for (let i = 0; i < objects.length; i++) {
+    const a = objects[i];
+    if (a.type !== 'wall') continue;
+    for (let j = i + 1; j < objects.length; j++) {
+      const b = objects[j];
+      if (b.type !== 'wall') continue;
+      if (a.rotation % 2 === b.rotation % 2) continue; // parallel, not a corner
+      if (!near(a.z, b.z) || !near(a.height, b.height)) continue;
+      const joinA = cornerJoinFor(a, b, j);
+      if (!joinA) continue;
+      joins[i].push(joinA);
+      const joinB = cornerJoinFor(b, a, i);
+      if (joinB) joins[j].push(joinB);
+      pairs.add(i * stride + j);
+      pairs.add(j * stride + i);
+    }
+  }
+  return { pairs, joins };
 }

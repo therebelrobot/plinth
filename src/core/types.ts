@@ -93,6 +93,12 @@ export interface RenderOptions {
   outlines: OutlineMode;
   /** Suppress outlines between flush, coplanar faces of different objects so stamped blocks read as one mass. */
   mergeCoplanarFaces: boolean;
+  /**
+   * Feature 4: merge perpendicular wall corners — suppress the interior seam and
+   * union a mitre post so the two walls read as one solid. Derived at render time
+   * (no document change). Defaults to true when omitted.
+   */
+  mergeWallCorners?: boolean;
   showFloor: boolean;
   showFloorGrid: boolean;
   background: BackgroundMode;
@@ -116,6 +122,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   bands: 4,
   outlines: 'all',
   mergeCoplanarFaces: true,
+  mergeWallCorners: true,
   showFloor: true,
   showFloorGrid: true,
   background: 'transparent',

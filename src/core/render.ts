@@ -4,8 +4,8 @@
 // Every output pixel is exactly one sample at the pixel centre — no
 // antialiasing — so edges come out as the clean 2:1 staircases pixel art wants.
 
-import { analyseAdjacency, pairStride } from './combinatorics';
-import { intersectCanonical, makeHit, prepareShape, type CanonicalShape } from './geometry';
+import { analyseAdjacency, analyseWallCorners, pairStride } from './combinatorics';
+import { intersectCanonical, makeHit, prepareShape, type CanonicalShape, type CornerPost } from './geometry';
 import { parameterOf } from './primitives';
 import { makeProjection, sceneProjection, type Projection } from './projection';
 import type { CombinatoricsSet, RenderOptions, SceneObject, SceneSettings } from './types';
@@ -57,7 +57,7 @@ function canonicalDirection(rotation: number, dx: number, dy: number): [number, 
   }
 }
 
-function prepare(object: SceneObject, index: number): PreparedObject {
+function prepare(object: SceneObject, index: number, posts?: CornerPost[]): PreparedObject {
   const swapped = object.rotation % 2 === 1;
   const a = swapped ? object.depth : object.width;
   const b = swapped ? object.width : object.depth;
@@ -65,7 +65,7 @@ function prepare(object: SceneObject, index: number): PreparedObject {
   return {
     index,
     object,
-    shape: prepareShape(object.type, a, b, object.height, parameterOf(object)),
+    shape: prepareShape(object.type, a, b, object.height, parameterOf(object), posts),
     directionX,
     directionY,
   };
@@ -193,12 +193,21 @@ export function renderScene(
   combinatorics?: CombinatoricsSet,
 ): RenderBuffers {
   const buffers = allocate(sceneProjection(settings), objects);
-  // Derive adjacency once, only when a set is imported: `joinPairs` is a Set of
-  // `a * stride + b` keys (both orders) that the edge pass consults.
-  buffers.joinPairs = combinatorics ? analyseAdjacency(objects).pairs : null;
+  // Feature 4: perpendicular wall corners are derived at render time (no document
+  // change) so matching walls merge at the back corner even without an import.
+  const wallCorners = options.mergeWallCorners === false ? null : analyseWallCorners(objects);
+  // `joinPairs` is a Set of `a * stride + b` keys (both orders) the edge pass
+  // consults: imported combinatorics pairs plus the derived wall corner pairs.
+  const importedPairs = combinatorics ? analyseAdjacency(objects).pairs : null;
+  if (importedPairs || wallCorners) {
+    const merged = new Set<number>(importedPairs ?? []);
+    if (wallCorners) for (const key of wallCorners.pairs) merged.add(key);
+    buffers.joinPairs = merged;
+  }
   if (options.showFloor) rasterise(buffers, prepare(floorObject(settings), -1), OWNER_FLOOR);
   objects.forEach((object, index) => {
-    if (isVisible(object, options)) rasterise(buffers, prepare(object, index), index);
+    const posts = wallCorners?.joins[index]?.map((join) => join.post);
+    if (isVisible(object, options)) rasterise(buffers, prepare(object, index, posts), index);
   });
   computeEdges(buffers, options);
   if (options.showFloor && options.showFloorGrid) computeFloorGrid(buffers);

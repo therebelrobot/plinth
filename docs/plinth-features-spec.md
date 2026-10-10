@@ -648,6 +648,11 @@ is contiguous so the top surface is genuinely coplanar and merges.
 - Preferred: **no document change** — joins are derived at render time from adjacency.
 - If a persistent per-object override is desired, add `SceneObject.connects?: number` (a
   cached mask) but keep it optional and derived. Recommend deriving instead.
+- **Implemented:** joins are derived at render time (no document change). A render-time
+  toggle `RenderOptions.mergeWallCorners` (default `true`) enables/disables the corner
+  merge; it is UI state, not persisted in the document. `analyseWallCorners` in
+  [`src/core/combinatorics.ts`](src/core/combinatorics.ts) produces the connected pairs
+  (for the edge pass) and the per-object mitre posts (for the wall union).
 
 ### 4(e) API endpoints / server changes
 

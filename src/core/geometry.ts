@@ -148,6 +148,18 @@ function solveQuadratic(a: number, b: number, c: number): boolean {
   return true;
 }
 
+/**
+ * A full-height box in a wall's canonical frame (x = thickness axis, y = run
+ * axis). Feature 4 unions these with the wall slab so perpendicular walls meet
+ * as a solid mitre at a shared corner.
+ */
+export interface CornerPost {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
 export interface CanonicalShape {
   type: PrimitiveType;
   a: number; // extent along canonical x
@@ -156,9 +168,14 @@ export interface CanonicalShape {
   parameter: number;
   /** Precomputed half-spaces for polyhedral types (ramp, pyramid). */
   planes: number[];
+  /** Optional corner-post boxes (Feature 4); absent for every non-wall shape. */
+  posts?: CornerPost[];
 }
 
-export function prepareShape(type: PrimitiveType, a: number, b: number, h: number, parameter: number): CanonicalShape {
+export function prepareShape(
+  type: PrimitiveType, a: number, b: number, h: number, parameter: number,
+  posts?: CornerPost[],
+): CanonicalShape {
   let planes: number[] = [];
   if (type === 'ramp') {
     // Box ∩ { lz ≤ h·(1 − lx/a) }  ⇔  (h/a)·lx + lz ≤ h
@@ -174,7 +191,7 @@ export function prepareShape(type: PrimitiveType, a: number, b: number, h: numbe
       0, (2 * h) / b, 1, 2 * h,
     ];
   }
-  return { type, a, b, h, parameter, planes };
+  return { type, a, b, h, parameter, planes, ...(posts && posts.length > 0 ? { posts } : {}) };
 }
 
 /**
@@ -193,7 +210,22 @@ export function intersectCanonical(
 
     case 'wall': {
       const thickness = Math.min(shape.parameter, a);
-      return intersectBox(0, thickness, 0, b, 0, h, px, py, pz, dx, dy, dz, out);
+      // Union of the slab with any corner posts (Feature 4): the visible point of
+      // a union is the max over parts, exactly as the stairs case does.
+      let found = intersectBox(0, thickness, 0, b, 0, h, px, py, pz, dx, dy, dz, out);
+      let bestT = found ? out.t : -Infinity;
+      let bestNx = out.nx, bestNy = out.ny, bestNz = out.nz;
+      if (shape.posts) {
+        for (const post of shape.posts) {
+          if (intersectBox(post.x0, post.x1, post.y0, post.y1, 0, h, px, py, pz, dx, dy, dz, out) && out.t > bestT) {
+            found = true;
+            bestT = out.t; bestNx = out.nx; bestNy = out.ny; bestNz = out.nz;
+          }
+        }
+      }
+      if (!found) return false;
+      out.t = bestT; out.nx = bestNx; out.ny = bestNy; out.nz = bestNz; out.curved = false;
+      return true;
     }
 
     case 'stairs': {
