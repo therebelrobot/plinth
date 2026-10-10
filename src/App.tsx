@@ -448,6 +448,8 @@ export function App() {
               notify={notify}
               onImport={(imported) => createScene({ ...imported, name: `${imported.name}` })}
               onCombinatorics={(set) => history.commit((current) => ({ ...current, combinatorics: set }))}
+              onPalette={(palette) => history.commit((current) => ({ ...current, palette }))}
+              onColorSettings={(colorSettings) => history.commit((current) => ({ ...current, colorSettings }))}
             />
           )}
         </div>

@@ -99,15 +99,30 @@ function validCombinatorics(value: unknown): boolean {
     Array.isArray(candidate.primitives);
 }
 
+/**
+ * Optional `SceneDocument.palette` boundary check (Feature 7). Kept inline so
+ * the server stays zero-dependency. When absent the field is ignored; when
+ * present every colour must be a strict `#rrggbb`.
+ */
+function validPalette(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.source === 'rampart' &&
+    typeof candidate.name === 'string' &&
+    Array.isArray(candidate.colors) &&
+    candidate.colors.every((color) => typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color));
+}
+
 /** Shape check only — the client owns the schema; the server just refuses obvious garbage. */
-export function validDocument(value: unknown): value is { name: string; version: 1; objects: unknown[]; settings: object; combinatorics?: unknown } {
+export function validDocument(value: unknown): value is { name: string; version: 1; objects: unknown[]; settings: object; combinatorics?: unknown; palette?: unknown } {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
   return candidate.version === 1 &&
     typeof candidate.name === 'string' && candidate.name.length <= 200 &&
     Array.isArray(candidate.objects) && candidate.objects.length <= 20000 &&
     !!candidate.settings && typeof candidate.settings === 'object' &&
-    (candidate.combinatorics === undefined || validCombinatorics(candidate.combinatorics));
+    (candidate.combinatorics === undefined || validCombinatorics(candidate.combinatorics)) &&
+    (candidate.palette === undefined || validPalette(candidate.palette));
 }
 
 function documentFrom(body: unknown) {

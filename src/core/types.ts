@@ -80,6 +80,32 @@ export interface CombinatoricsSet {
   primitives: PrimitiveCombinatorics[];
 }
 
+/**
+ * Feature 7 — an imported rampart palette. `colors` is the resolved, ordered
+ * `hexColors` list: shared shadow, then each ramp dark→light, then shared
+ * highlight. plinth never regenerates rampart's palette; it only consumes the
+ * export.
+ */
+export interface Palette {
+  source: 'rampart';
+  name: string;
+  /** Ordered: shared shadow, then each ramp dark→light, then shared highlight. */
+  colors: string[]; // '#rrggbb'
+}
+
+/** Feature 7 — how the palette is applied. Persisted with the document. */
+export interface ColorSettings {
+  enabled: boolean;
+  /** How to choose a ramp per object. */
+  assign: 'cycle' | 'byType' | 'byLevel';
+  /** How many palette slots form one ramp (excluding shared ends). */
+  rampSize?: number;
+  /** Outline colour; defaults to the palette's shared shadow. */
+  outlineColor?: string;
+  /** Floor colour; defaults to the palette's shared shadow. */
+  floorColor?: string;
+}
+
 export interface SceneDocument {
   version: 1;
   name: string;
@@ -87,6 +113,12 @@ export interface SceneDocument {
   objects: SceneObject[];
   /** Imported connectivity classes used to drive primitive surfaces. Absent = legacy geometry. */
   combinatorics?: CombinatoricsSet;
+  /** Feature 7 — imported rampart palette. Absent = greyscale only. */
+  palette?: Palette;
+  /** Feature 7 — per-object palette assignment override; else derived. */
+  colorMap?: Record<string, number>;
+  /** Feature 7 — colour enablement and mapping. */
+  colorSettings?: ColorSettings;
 }
 
 export type ShadingMode = 'shaded' | 'height' | 'silhouette' | 'blank';

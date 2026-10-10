@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
+import { parseRampartPalette } from '../core/color';
 import { parseCombinatorics, type CombinatoricsScheme } from '../core/combinatorics';
 import { composeImage } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
 import { sceneProjection } from '../core/projection';
 import { renderPrimitive } from '../core/render';
-import type { CombinatoricsSet, PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
+import type { ColorSettings, CombinatoricsSet, Palette, PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
 import {
   canShareFiles, deliverFile, exportCombinatoricsJson, exportPrimitiveKit, exportPrimitivePng, exportSceneJson, exportScenePng, exportScenePsd, rgbaToCanvas,
 } from '../lib/exporters';
@@ -249,6 +250,8 @@ export function ExportPanel(props: {
   options: RenderOptions;
   onImport: (document: SceneDocument) => void;
   onCombinatorics: (set: CombinatoricsSet | undefined) => void;
+  onPalette: (palette: Palette | undefined) => void;
+  onColorSettings: (settings: ColorSettings | undefined) => void;
   notify: (message: string) => void;
 }) {
   const { document, options, notify } = props;
@@ -395,6 +398,58 @@ export function ExportPanel(props: {
           Active set: <strong>{document.combinatorics.scheme}</strong> · {document.combinatorics.primitives.length} primitive{ document.combinatorics.primitives.length === 1 ? '' : 's' }
           {document.combinatorics.source?.exportedAt ? ` · exported ${document.combinatorics.source.exportedAt}` : ''}
         </p>
+      )}
+
+      <h3>Colour (rampart)</h3>
+      <p className="muted small">Import a rampart palette export to add a real <strong>Base color</strong> layer under the greyscale trace layers. Colour applies only when no combinatorics set is imported.</p>
+      <div className="button-row">
+        <label className="button">
+          <Icon name="folder" size={16} /> Import palette
+          <input type="file" accept="application/json,.json" hidden onChange={async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (!file) return;
+            try {
+              const warnings: string[] = [];
+              const palettes = parseRampartPalette(await file.text(), (message) => warnings.push(message));
+              const palette = palettes[0];
+              props.onPalette(palette);
+              props.onColorSettings({ enabled: true, assign: document.colorSettings?.assign ?? 'cycle', rampSize: document.colorSettings?.rampSize });
+              notify(`Imported palette "${palette.name}" (${palette.colors.length} colours)${warnings.length ? ` — ${warnings.join('; ')}` : ''}`);
+            } catch (error) {
+              notify(`Import failed: ${(error as Error).message}`);
+            }
+          }} />
+        </label>
+        {document.palette && (
+          <button type="button" className="button danger" onClick={() => { props.onPalette(undefined); props.onColorSettings(undefined); notify('Cleared palette'); }}>
+            <Icon name="trash" size={16} /> Clear
+          </button>
+        )}
+      </div>
+      {document.palette && (
+        <>
+          <div className="swatches">
+            {document.palette.colors.map((color, index) => (
+              <span key={`${color}-${index}`} className="swatch" style={{ background: color }} title={color} />
+            ))}
+          </div>
+          <Toggle label="Colour base layer" hint="adds a Base color layer to PSD/PNG exports" checked={Boolean(document.colorSettings?.enabled)} onChange={(enabled) => props.onColorSettings({ enabled, assign: document.colorSettings?.assign ?? 'cycle', rampSize: document.colorSettings?.rampSize })} />
+          <Segmented<ColorSettings['assign']>
+            label="Assign ramps"
+            value={document.colorSettings?.assign ?? 'cycle'}
+            onChange={(assign) => props.onColorSettings({ enabled: document.colorSettings?.enabled ?? true, assign, rampSize: document.colorSettings?.rampSize })}
+            options={[
+              { value: 'cycle', label: 'Cycle', title: 'One ramp per object, in placement order' },
+              { value: 'byType', label: 'By type', title: 'One ramp per primitive type' },
+              { value: 'byLevel', label: 'By level', title: 'One ramp per level' },
+            ]}
+          />
+          <NumberField label="Ramp size" value={document.colorSettings?.rampSize ?? Math.max(1, document.palette.colors.length - 2)} step={1} min={1} max={Math.max(1, document.palette.colors.length)} onChange={(rampSize) => props.onColorSettings({ enabled: document.colorSettings?.enabled ?? true, assign: document.colorSettings?.assign ?? 'cycle', rampSize })} />
+          {document.combinatorics && (
+            <p className="muted small">A combinatorics set is imported, so colour is suppressed — the combinatorics surface map takes precedence.</p>
+          )}
+        </>
       )}
 
       <h3>Scene file</h3>

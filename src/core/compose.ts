@@ -1,8 +1,9 @@
 // Turns render buffers into pixels: grey values per shading mode, then the
 // composite image or separate layers (for PSD export).
 
+import { colorForBand, hexToRgb, sharedShadow } from './color';
 import { OWNER_FLOOR, OWNER_NONE, type RenderBuffers } from './render';
-import type { RenderOptions, SceneSettings } from './types';
+import type { ColorSettings, Palette, RenderOptions, SceneSettings } from './types';
 
 // Light from upper-left-front. In this projection the +y face is the visible
 // left face and +x the right face, so with this vector a block reads as
@@ -75,6 +76,68 @@ function write(rgba: Uint8ClampedArray, index: number, grey: number): void {
   rgba[offset] = grey; rgba[offset + 1] = grey; rgba[offset + 2] = grey; rgba[offset + 3] = 255;
 }
 
+function writeRgb(rgba: Uint8ClampedArray, index: number, rgb: readonly [number, number, number]): void {
+  const offset = index * 4;
+  rgba[offset] = rgb[0]; rgba[offset + 1] = rgb[1]; rgba[offset + 2] = rgb[2]; rgba[offset + 3] = 255;
+}
+
+/**
+ * Feature 7 — the RGB for a covered pixel, or null for empty. Reuses the same
+ * banded-Lambert fraction as `toneAt`, so tops read light and shadowed sides
+ * read dark within each object's ramp. Outlines and the floor use the palette's
+ * shared shadow unless overridden in `colorSettings`.
+ */
+function colorAt(
+  buffers: RenderBuffers,
+  index: number,
+  options: RenderOptions,
+  palette: Palette,
+  colorSettings: ColorSettings,
+  outlineRgb: readonly [number, number, number],
+  floorRgb: readonly [number, number, number],
+): [number, number, number] | null {
+  const owner = buffers.owner[index];
+  if (owner === OWNER_NONE) return null;
+  let rgb: [number, number, number];
+  if (owner === OWNER_FLOOR) {
+    rgb = [floorRgb[0], floorRgb[1], floorRgb[2]];
+    if (buffers.grid[index]) rgb = [Math.max(0, rgb[0] - GRID_DARKEN), Math.max(0, rgb[1] - GRID_DARKEN), Math.max(0, rgb[2] - GRID_DARKEN)];
+  } else {
+    const object = buffers.objects[owner];
+    const fraction = bandFraction(buffers, index, options.bands);
+    rgb = hexToRgb(colorForBand(palette, colorSettings, object, owner, fraction));
+  }
+  if (buffers.outline[index]) rgb = [outlineRgb[0], outlineRgb[1], outlineRgb[2]];
+  return rgb;
+}
+
+/**
+ * Feature 7 — like `composeImage` but writes real RGB per pixel from an
+ * imported rampart palette. The greyscale trace path is untouched.
+ */
+export function composeColorImage(
+  buffers: RenderBuffers,
+  options: RenderOptions,
+  _settings: Pick<SceneSettings, 'levelCount'>,
+  palette: Palette,
+  colorSettings: ColorSettings,
+): Uint8ClampedArray {
+  const { width, height } = buffers;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const background = backgroundGrey(options);
+  const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette));
+  const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette));
+  for (let index = 0; index < width * height; index++) {
+    const rgb = colorAt(buffers, index, options, palette, colorSettings, outlineRgb, floorRgb);
+    if (!rgb) {
+      if (background >= 0) write(rgba, index, background);
+      continue;
+    }
+    writeRgb(rgba, index, rgb);
+  }
+  return rgba;
+}
+
 /** Flattened RGBA image. */
 export function composeImage(
   buffers: RenderBuffers,
@@ -121,6 +184,8 @@ export function composeLayers(
   buffers: RenderBuffers,
   options: RenderOptions,
   settings: Pick<SceneSettings, 'levelCount'>,
+  palette?: Palette,
+  colorSettings?: ColorSettings,
 ): ImageLayer[] {
   const { width, height } = buffers;
   const size = width * height;
@@ -131,6 +196,20 @@ export function composeLayers(
     const rgba = new Uint8ClampedArray(size * 4);
     for (let index = 0; index < size; index++) write(rgba, index, background);
     layers.push({ name: 'Background', rgba });
+  }
+
+  // Feature 7 — a real colour base under the greyscale trace layers. Transparent
+  // where empty so it sits above the Background layer without duplicating it.
+  if (palette && colorSettings?.enabled) {
+    const base = new Uint8ClampedArray(size * 4);
+    const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette));
+    const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette));
+    let hasBase = false;
+    for (let index = 0; index < size; index++) {
+      const rgb = colorAt(buffers, index, options, palette, colorSettings, outlineRgb, floorRgb);
+      if (rgb) { writeRgb(base, index, rgb); hasBase = true; }
+    }
+    if (hasBase) layers.push({ name: 'Base color', rgba: base });
   }
 
   const floor = new Uint8ClampedArray(size * 4);
