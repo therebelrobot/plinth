@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
+import type { CombinatoricsScheme } from '../core/combinatorics';
 import { composeImage } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
 import { sceneProjection } from '../core/projection';
 import { renderPrimitive } from '../core/render';
 import type { PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
 import {
-  canShareFiles, deliverFile, exportPrimitiveKit, exportPrimitivePng, exportSceneJson, exportScenePng, exportScenePsd, rgbaToCanvas,
+  canShareFiles, deliverFile, exportCombinatoricsJson, exportPrimitiveKit, exportPrimitivePng, exportSceneJson, exportScenePng, exportScenePsd, rgbaToCanvas,
 } from '../lib/exporters';
 import { Icon } from './Icon';
 import { NumberField, Segmented, Toggle } from './Fields';
@@ -234,6 +235,7 @@ export function ExportPanel(props: {
 }) {
   const { document, options, notify } = props;
   const [scale, setScale] = useState(1);
+  const [scheme, setScheme] = useState<CombinatoricsScheme>('iso-4');
   const [busy, setBusy] = useState<string | null>(null);
   const shareable = useMemo(() => canShareFiles(), []);
   const [presetKey, setPresetKey] = useState(PRIMITIVE_PRESETS[0].key);
@@ -333,6 +335,19 @@ export function ExportPanel(props: {
       {exportButton({ label: 'Primitive PNG', make: () => exportPrimitivePng(document.settings, primitive, exportOptions, scale) })}
       {exportButton({ label: 'Primitive kit (.zip)', make: () => exportPrimitiveKit(document.settings, exportOptions, scale) })}
       <p className="muted small">The kit has every palette shape in every facing at this scene's tile size: individual PNGs cropped to their bounds, a sheet, and kit.json with anchor offsets.</p>
+
+      <h3>Combinatorics</h3>
+      <Segmented<CombinatoricsScheme>
+        label="Connectivity"
+        value={scheme}
+        onChange={setScheme}
+        options={[
+          { value: 'iso-4', label: 'iso-4', title: 'Four orthogonal neighbours (N/E/S/W)' },
+          { value: 'iso-8', label: 'iso-8', title: 'Adds diagonals — 47 blob classes' },
+        ]}
+      />
+      <p className="muted small">Center, edge (straight) and corner classes for every primitive in the scene. <strong>edge</strong> means a straight run (two opposite connections).</p>
+      {exportButton({ label: 'Combinatorics (JSON)', make: () => exportCombinatoricsJson(document, { scheme }) })}
 
       <h3>Scene file</h3>
       <div className="button-row">

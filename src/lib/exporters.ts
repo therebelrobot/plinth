@@ -1,5 +1,6 @@
 // Turning renders into files the user can save or send to Procreate.
 
+import { buildCombinatorics, type CombinatoricsOptions } from '../core/combinatorics';
 import { composeImage, composeLayers, upscale } from '../core/compose';
 import { PRIMITIVE_PRESETS, DIRECTIONAL_TYPES } from '../core/primitives';
 import { encodePsd } from '../core/psd';
@@ -185,5 +186,18 @@ export function exportSceneJson(document: SceneDocument): { blob: Blob; filename
   return {
     blob: new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' }),
     filename: `${slug(document.name)}.plinth.json`,
+  };
+}
+
+/**
+ * The connectivity classes (center / edge / corner, plus single / end / tee) for
+ * every distinct primitive template in the scene, as a `plinth.combinatorics` v1
+ * document. Mirrors `exportSceneJson`.
+ */
+export function exportCombinatoricsJson(document: SceneDocument, options: CombinatoricsOptions = {}): { blob: Blob; filename: string } {
+  const payload = buildCombinatorics(document, options);
+  return {
+    blob: new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+    filename: `${slug(document.name)}.combinatorics.json`,
   };
 }
