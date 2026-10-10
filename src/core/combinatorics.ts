@@ -485,6 +485,25 @@ function wallRunLength(object: SceneObject): number {
 }
 
 /**
+ * Feature 6: the wall's sloped top height at canonical run position `y`, clamped
+ * to the wall's own height. Flat walls return the full height. Mirrors the slope
+ * plane built in `prepareShape` so the mitre post never pokes above the slope.
+ */
+function slopeTopAt(object: SceneObject, y: number): number {
+  const slope = object.slope ?? 0;
+  if (slope <= 0) return object.height;
+  const b = wallRunLength(object);
+  const clamped = Math.min(Math.max(slope, 0), 1);
+  const run = clamped * b;
+  if (run <= 0) return object.height;
+  const rise = object.height / run;
+  const z = (object.slopeDirection ?? 1) < 0
+    ? rise * y
+    : object.height / clamped - rise * y;
+  return Math.min(object.height, Math.max(0, z));
+}
+
+/**
  * The world AABB of a wall's solid slab. A wall is anchored to one edge of its
  * footprint (low-x at rotation 0, low-y at 1, high-x at 2, high-y at 3) and spans
  * the full run length along the other axis.
@@ -562,7 +581,10 @@ function cornerJoinFor(a: SceneObject, b: SceneObject, bIndex: number): WallCorn
     y0: end === 0 ? Math.min(by0, 0) : Math.min(by0, aRun),
     y1: end === 0 ? Math.max(by1, 0) : Math.max(by1, aRun),
   };
-  return { neighbour: bIndex, end, thickness: wallThickness(b), post };
+  // Feature 6: clamp the post's top to the lowest sloped surface height across
+  // its run span, so a sloped wall's corner column never rises above the slope.
+  const top = Math.min(slopeTopAt(a, post.y0), slopeTopAt(a, post.y1));
+  return { neighbour: bIndex, end, thickness: wallThickness(b), post: { ...post, top } };
 }
 
 /**
@@ -575,22 +597,57 @@ export function analyseWallCorners(objects: SceneObject[]): WallCornerAdjacency 
   const joins: WallCornerJoin[][] = objects.map(() => []);
   const pairs = new Set<number>();
   const stride = pairStride(objects.length);
-  for (let i = 0; i < objects.length; i++) {
-    const a = objects[i];
-    if (a.type !== 'wall') continue;
-    for (let j = i + 1; j < objects.length; j++) {
-      const b = objects[j];
-      if (b.type !== 'wall') continue;
-      if (a.rotation % 2 === b.rotation % 2) continue; // parallel, not a corner
-      if (!near(a.z, b.z) || !near(a.height, b.height)) continue;
-      const joinA = cornerJoinFor(a, b, j);
-      if (!joinA) continue;
-      joins[i].push(joinA);
-      const joinB = cornerJoinFor(b, a, i);
-      if (joinB) joins[j].push(joinB);
-      pairs.add(i * stride + j);
-      pairs.add(j * stride + i);
+
+  // Spatial hash of wall footprints so the corner pass is O(n)-ish rather than
+  // O(n²) (spec §3(g) warns about the 20 000-object ceiling). A perpendicular
+  // corner neighbour's slab must reach into this wall's footprint, so it lies
+  // within one tile of it — the same unit-cell approach as `analyseAdjacency`.
+  const grid = new Map<number, number[]>();
+  const cellKey = (cx: number, cy: number): number => cx * 65536 + cy;
+  objects.forEach((object, index) => {
+    if (object.type !== 'wall') return;
+    const startX = Math.floor(object.x), endX = Math.floor(object.x + object.width - 1e-9);
+    const startY = Math.floor(object.y), endY = Math.floor(object.y + object.depth - 1e-9);
+    for (let cx = startX; cx <= endX; cx++) {
+      for (let cy = startY; cy <= endY; cy++) {
+        const key = cellKey(cx, cy);
+        const bucket = grid.get(key);
+        if (bucket) bucket.push(index);
+        else grid.set(key, [index]);
+      }
     }
-  }
+  });
+
+  const tested = new Set<number>();
+  objects.forEach((a, i) => {
+    if (a.type !== 'wall') return;
+    const lowX = Math.floor(a.x - 1 - ADJACENCY_TOLERANCE);
+    const highX = Math.floor(a.x + a.width + 1 + ADJACENCY_TOLERANCE);
+    const lowY = Math.floor(a.y - 1 - ADJACENCY_TOLERANCE);
+    const highY = Math.floor(a.y + a.depth + 1 + ADJACENCY_TOLERANCE);
+    for (let cx = lowX; cx <= highX; cx++) {
+      for (let cy = lowY; cy <= highY; cy++) {
+        const bucket = grid.get(cellKey(cx, cy));
+        if (!bucket) continue;
+        for (const j of bucket) {
+          if (j === i) continue;
+          const key = i * stride + j;
+          if (tested.has(key)) continue;
+          tested.add(key);
+          tested.add(j * stride + i);
+          const b = objects[j];
+          if (a.rotation % 2 === b.rotation % 2) continue; // parallel, not a corner
+          if (!near(a.z, b.z) || !near(a.height, b.height)) continue;
+          const joinA = cornerJoinFor(a, b, j);
+          if (!joinA) continue;
+          joins[i].push(joinA);
+          const joinB = cornerJoinFor(b, a, i);
+          if (joinB) joins[j].push(joinB);
+          pairs.add(i * stride + j);
+          pairs.add(j * stride + i);
+        }
+      }
+    }
+  });
   return { pairs, joins };
 }

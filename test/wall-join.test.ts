@@ -112,6 +112,38 @@ test('analyseWallCorners describes the thickness×thickness post for an L', () =
   assert.ok(Math.abs(post.y1 - post.y0 - 0.25) < 1e-9, `post depth ${post.y1 - post.y0}`);
 });
 
+test('analyseWallCorners finds corners via the spatial hash regardless of array order', () => {
+  // The two corner walls are separated by unrelated objects, so a naive
+  // adjacent-index scan would miss them; the unit-cell hash must still find them.
+  const objects = [
+    makeObject('block', 3, 3, 0),
+    makeObject('wall', 0, 0, 0, 1, 6, 3, 0, 0.25),
+    makeObject('cylinder', 5, 5, 0),
+    makeObject('wall', 0, 0, 0, 6, 1, 3, 1, 0.25),
+  ];
+  const { pairs, joins } = analyseWallCorners(objects);
+  assert.equal(pairs.size, 2);
+  assert.equal(joins[1].length, 1);
+  assert.equal(joins[3].length, 1);
+  assert.equal(joins[1][0].neighbour, 3);
+});
+
+test('a sloped wall clamps its mitre post to the sloped surface (Feature 6)', () => {
+  // Wall 0 runs along y (0..6) and rises at the low-y end; wall 1 meets it at
+  // the high-y end, where the slope has descended to zero height.
+  const objects = [
+    { ...makeObject('wall', 0, 0, 0, 1, 6, 3, 0, 0.25), slope: 1, slopeDirection: 1 as const },
+    makeObject('wall', 0, 6, 0, 6, 1, 3, 1, 0.25),
+  ];
+  const { joins } = analyseWallCorners(objects);
+  assert.equal(joins[0].length, 1);
+  const post = joins[0][0].post;
+  assert.ok((post.top ?? 3) <= 1e-9, `post top ${post.top} should be clamped to the slope`);
+  // A flat wall keeps the full-height post.
+  const flat = analyseWallCorners(backCornerL());
+  assert.equal(flat.joins[0][0].post.top, 3);
+});
+
 test('wallSlabBounds anchors the slab to the correct footprint edge per rotation', () => {
   const lowX = wallSlabBounds(makeObject('wall', 0, 0, 0, 1, 6, 3, 0, 0.25));
   assert.deepEqual(lowX, { x0: 0, x1: 0.25, y0: 0, y1: 6 });

@@ -158,6 +158,12 @@ export interface CornerPost {
   x1: number;
   y0: number;
   y1: number;
+  /**
+   * Feature 6: the post's top height. Defaults to the wall's full height; a
+   * sloped wall clamps it to the sloped surface so the mitre never pokes above
+   * the slope.
+   */
+  top?: number;
 }
 
 export interface CanonicalShape {
@@ -243,7 +249,9 @@ export function intersectCanonical(
       let bestNx = out.nx, bestNy = out.ny, bestNz = out.nz;
       if (shape.posts) {
         for (const post of shape.posts) {
-          if (intersectBox(post.x0, post.x1, post.y0, post.y1, 0, h, px, py, pz, dx, dy, dz, out) && out.t > bestT) {
+          const top = post.top ?? h;
+          if (top <= 0) continue; // a fully-clamped post contributes nothing
+          if (intersectBox(post.x0, post.x1, post.y0, post.y1, 0, top, px, py, pz, dx, dy, dz, out) && out.t > bestT) {
             found = true;
             bestT = out.t; bestNx = out.nx; bestNy = out.ny; bestNz = out.nz;
           }
