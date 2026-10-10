@@ -501,9 +501,9 @@ export interface TilesetBuildOptions {
   now?: Date;
 }
 
+/** Export-side alias of `templateKey` — one shared key so the two cannot drift. */
 export function faceKey(object: SceneObject): string {
-  return [object.type, object.width, object.depth, object.height,
-  object.parameter ?? '', object.slope ?? 0, object.slopeDirection ?? 1].join('|');
+  return templateKey(object);
 }
 
 export function faceSlug(object: SceneObject): string {
