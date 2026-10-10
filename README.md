@@ -29,6 +29,25 @@ npm run build && npm start
 | `HOST` | `0.0.0.0` | |
 | `DATA_DIR` | `./data` | SQLite lives here |
 | `STATIC_DIR` | `./dist/public` | built client |
+| `PLINTH_TOKEN` | *(unset)* | shared secret; unset = the app is **UNPROTECTED** |
+| `PLINTH_COOKIE_SECURE` | `auto` | `Secure` cookie: `auto` \| `true` \| `false` |
+| `PLINTH_SESSION_TTL` | `2592000` | session lifetime in seconds (30 days) |
+
+## Authentication
+
+Set `PLINTH_TOKEN` to gate the **entire** app — the SPA bundle, every asset, and every API — behind one shared secret. This replaces the external reverse-proxy / basic-auth setup: the server now owns auth.
+
+```sh
+docker run -d -p 3000:3000 -e PLINTH_TOKEN=change-me -v plinth-data:/data ghcr.io/therebelrobot/plinth:latest
+```
+
+- **Unset `PLINTH_TOKEN`** → auth is disabled and the server logs `plinth: PLINTH_TOKEN is not set — the app is UNPROTECTED`. Backwards compatible.
+- **Sign-in** is a server-rendered page (the SPA is itself gated, so it can't host the login UI). Enter the token; the server sets an HMAC-signed, `HttpOnly`, `SameSite=Strict` session cookie. No server-side session store.
+- **Non-browser clients** may send `Authorization: Bearer <token>` instead of a cookie.
+- **`/api/health` stays public** so the Docker `HEALTHCHECK` works. If you gate it, the container flips to unhealthy.
+- **`PLINTH_COOKIE_SECURE`** defaults to `auto`, which sets `Secure` when `x-forwarded-proto: https` is present (TLS terminated upstream). Force it with `true`/`false` if your proxy doesn't set that header.
+- **CSRF:** `SameSite=Strict` mitigates it for the state-changing scene routes; cross-site embedding of the app is intentionally unsupported.
+- **Dev:** Vite serves the static app and proxies only `/api` to the Node server, so the server-side login page is bypassed in dev. `PLINTH_TOKEN` on the Node process still gates the dev API.
 
 Releases: `npm run release:patch|minor|major` bumps the version and pushes the tag; `.github/workflows/release.yml` tests, then builds `linux/amd64,linux/arm64` to GHCR with signed provenance. Pin the actions to SHAs before relying on it (see the comment at the top of the workflow).
 

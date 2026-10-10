@@ -6,6 +6,11 @@ services:
       - "3000:3000"
     volumes:
       - ./data:/data
+    # Gate the app behind a shared secret. Unset = the app is UNPROTECTED.
+    # environment:
+    #   PLINTH_TOKEN: "change-me"
+    #   PLINTH_COOKIE_SECURE: "auto"   # auto | true | false
+    #   PLINTH_SESSION_TTL: "2592000"  # seconds (30 days)
     # The image runs as the `node` user (uid 1000). If ./data is owned by
     # someone else on the host, either chown it to 1000 or set user: below.
     # user: "1000:1000"

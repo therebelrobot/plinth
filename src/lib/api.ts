@@ -21,14 +21,38 @@ function safeStorage(): Storage | null {
   }
 }
 
+/** Thrown for any non-OK response; `status` lets callers branch on 401. */
+export class AuthError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    // Same-origin is the browser default, but state it so the HttpOnly session
+    // cookie always rides along.
+    credentials: 'same-origin',
     headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
   });
+  if (response.status === 401) {
+    // The server-rendered login page is the primary sign-in; this event lets the
+    // running app show a "session expired" overlay instead of failing silently.
+    window.dispatchEvent(new Event('plinth:unauthorized'));
+    throw new AuthError(401, `${init?.method ?? 'GET'} ${path} → 401`);
+  }
   if (!response.ok) throw new Error(`${init?.method ?? 'GET'} ${path} → ${response.status}`);
   return (await response.json()) as T;
 }
+
+export const authApi = {
+  status: () => request<{ authenticated: boolean }>('/api/auth/session'),
+  login: (token: string) =>
+    request<{ ok: true }>('/api/auth/session', { method: 'POST', body: JSON.stringify({ token }) }),
+  logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
+};
 
 export const sceneApi = {
   list: () => request<SceneSummary[]>('/api/scenes'),

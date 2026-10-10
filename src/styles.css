@@ -303,3 +303,23 @@ small { color: var(--text-3); }
 @media (hover: none) {
   .icon-button { width: var(--touch); height: var(--touch); }
 }
+
+/* Session-expired overlay: the server-rendered login page is the primary
+   sign-in, so this only nudges the user to reload. */
+.auth-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+.auth-card {
+  width: min(320px, 90vw); padding: 24px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5); text-align: center;
+}
+.auth-card h2 { margin: 0 0 6px; font-size: 16px; }
+.auth-card p { margin: 0 0 16px; color: var(--text-2); font-size: 13px; }
+.auth-card button {
+  width: 100%; padding: 10px 12px; font-weight: 600;
+  color: var(--accent-ink); background: var(--accent); border: 0; border-radius: var(--radius-small);
+}
+.auth-card button:hover { background: #ff8f5c; }

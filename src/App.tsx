@@ -59,6 +59,7 @@ export function App() {
   const [scenesOpen, setScenesOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const [unauthorized, setUnauthorized] = useState(false);
   const viewportRef = useRef<ViewportHandle>(null);
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1000);
   useEffect(() => {
@@ -66,6 +67,13 @@ export function App() {
     const update = () => setNarrow(query.matches);
     query.addEventListener('change', update);
     return () => query.removeEventListener('change', update);
+  }, []);
+  // A 401 from any API call means the session lapsed. The server-rendered login
+  // page is the primary sign-in, so a reload lands there directly.
+  useEffect(() => {
+    const onUnauthorized = () => setUnauthorized(true);
+    window.addEventListener('plinth:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('plinth:unauthorized', onUnauthorized);
   }, []);
   const loaded = useRef(false);
   const savedSnapshot = useRef<string>('');
@@ -453,6 +461,16 @@ export function App() {
           onNew={() => { setScenesOpen(false); createScene(newDocument()); }}
           onDuplicate={() => { setScenesOpen(false); createScene({ ...history.current(), name: `${history.current().name} copy` }); }}
         />
+      )}
+
+      {unauthorized && (
+        <div className="auth-overlay" role="alertdialog" aria-modal="true" aria-label="Session expired">
+          <div className="auth-card">
+            <h2>Session expired</h2>
+            <p>Reload to sign in again.</p>
+            <button type="button" onClick={() => window.location.reload()}>Reload</button>
+          </div>
+        </div>
       )}
     </div>
   );

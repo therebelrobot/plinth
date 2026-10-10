@@ -6,18 +6,17 @@
 
 import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import {
+  clearSessionCookie, constantTimeEqual, hasBearerToken, hasValidSession, isAuthPath,
+  isPublicPath, isSecureRequest, readAuthConfig, serveLoginPage, sessionCookie, signSession,
+  type AuthConfig,
+} from './auth';
 import { openStore } from './store';
 
-const port = Number(process.env.PORT ?? 3000);
-const host = process.env.HOST ?? '0.0.0.0';
-const dataDirectory = resolve(process.env.DATA_DIR ?? join(process.cwd(), 'data'));
-const staticDirectory = resolve(process.env.STATIC_DIR ?? join(process.cwd(), 'dist', 'public'));
 const maxBodyBytes = 8 * 1024 * 1024;
-
-mkdirSync(dataDirectory, { recursive: true });
-const store = openStore(join(dataDirectory, 'plinth.sqlite'));
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -45,7 +44,7 @@ class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of request) {
@@ -53,12 +52,38 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     if (total > maxBodyBytes) throw new HttpError(413, 'body too large');
     chunks.push(chunk as Buffer);
   }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  const raw = await readBody(request);
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return JSON.parse(raw);
   } catch {
     throw new HttpError(400, 'invalid JSON');
   }
 }
+
+/** Accepts either a JSON `{ token }` body or a urlencoded form field `token`. */
+async function readToken(request: IncomingMessage): Promise<string> {
+  const contentType = (request.headers['content-type'] ?? '').toLowerCase();
+  const raw = await readBody(request);
+  if (contentType.includes('application/json')) {
+    try {
+      const parsed = JSON.parse(raw) as { token?: unknown };
+      return typeof parsed?.token === 'string' ? parsed.token : '';
+    } catch {
+      throw new HttpError(400, 'invalid JSON');
+    }
+  }
+  return new URLSearchParams(raw).get('token') ?? '';
+}
+
+function acceptsHtml(request: IncomingMessage): boolean {
+  return (request.headers.accept ?? '').includes('text/html');
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Shape check only — the client owns the schema; the server just refuses obvious garbage. */
 function validDocument(value: unknown): value is { name: string; version: 1; objects: unknown[]; settings: object } {
@@ -76,83 +101,154 @@ function documentFrom(body: unknown) {
   return document;
 }
 
-async function handleApi(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> {
-  const method = request.method ?? 'GET';
-  if (path === '/api/health') return sendJson(response, 200, { ok: true });
-
-  if (path === '/api/scenes') {
-    if (method === 'GET') return sendJson(response, 200, store.list());
-    if (method === 'POST') {
-      const document = documentFrom(await readJson(request));
-      const id = randomBytes(9).toString('base64url');
-      store.put(id, document.name, JSON.stringify(document));
-      return sendJson(response, 201, { id });
-    }
-    throw new HttpError(405, 'method not allowed');
-  }
-
-  const match = path.match(/^\/api\/scenes\/([\w-]{1,64})$/);
-  if (match) {
-    const id = match[1];
-    if (method === 'GET') {
-      const row = store.get(id);
-      if (!row) throw new HttpError(404, 'not found');
-      return sendJson(response, 200, { id, document: JSON.parse(row.document), updatedAt: row.updatedAt });
-    }
-    if (method === 'PUT') {
-      const document = documentFrom(await readJson(request));
-      const updatedAt = store.put(id, document.name, JSON.stringify(document));
-      return sendJson(response, 200, { id, updatedAt });
-    }
-    if (method === 'DELETE') {
-      store.remove(id);
-      return sendJson(response, 200, { ok: true });
-    }
-    throw new HttpError(405, 'method not allowed');
-  }
-  throw new HttpError(404, 'not found');
+export interface AppServerOptions {
+  auth?: AuthConfig;
+  store?: ReturnType<typeof openStore>;
+  staticDirectory?: string;
 }
 
-function serveStatic(request: IncomingMessage, response: ServerResponse, path: string): void {
-  let decoded: string;
-  try { decoded = decodeURIComponent(path); } catch { throw new HttpError(400, 'bad path'); }
-  const candidate = normalize(join(staticDirectory, decoded));
-  // Unknown paths (and directory traversal attempts) get the SPA shell.
-  const file = candidate.startsWith(staticDirectory + sep) && existsSync(candidate) && statSync(candidate).isFile()
-    ? candidate
-    : join(staticDirectory, 'index.html');
-  if (!existsSync(file)) {
-    response.writeHead(503, { 'content-type': 'text/plain' });
-    response.end('Client not built. Run `npm run build`.');
-    return;
+export interface AppServer {
+  server: Server;
+  store: ReturnType<typeof openStore>;
+}
+
+export function createAppServer(options: AppServerOptions = {}): AppServer {
+  const auth = options.auth ?? readAuthConfig(process.env);
+  const staticDirectory = options.staticDirectory ?? resolve(process.env.STATIC_DIR ?? join(process.cwd(), 'dist', 'public'));
+  const store = options.store ?? (() => {
+    const dataDirectory = resolve(process.env.DATA_DIR ?? join(process.cwd(), 'data'));
+    mkdirSync(dataDirectory, { recursive: true });
+    return openStore(join(dataDirectory, 'plinth.sqlite'));
+  })();
+
+  async function handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const token = await readToken(request);
+    const wantsHtml = acceptsHtml(request);
+    if (!auth.token || !constantTimeEqual(token, auth.token)) {
+      await delay(250); // slow guessing
+      if (wantsHtml) return serveLoginPage(response, 401, 'Incorrect token. Try again.');
+      return sendJson(response, 401, { error: 'unauthorized' });
+    }
+    const session = signSession(auth.token, Date.now());
+    response.setHeader('set-cookie', sessionCookie(session, auth, isSecureRequest(request, auth)));
+    if (wantsHtml) { response.writeHead(303, { location: '/' }); response.end(); return; }
+    return sendJson(response, 200, { ok: true });
   }
-  const isHashedAsset = file.startsWith(join(staticDirectory, 'assets') + sep);
-  response.writeHead(200, {
-    'content-type': CONTENT_TYPES[extname(file)] ?? 'application/octet-stream',
-    'cache-control': isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache',
-    'x-content-type-options': 'nosniff',
+
+  function handleLogout(request: IncomingMessage, response: ServerResponse): void {
+    response.setHeader('set-cookie', clearSessionCookie(isSecureRequest(request, auth)));
+    if (acceptsHtml(request)) { response.writeHead(303, { location: '/' }); response.end(); return; }
+    return sendJson(response, 200, { ok: true });
+  }
+
+  async function handleApi(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> {
+    const method = request.method ?? 'GET';
+    if (path === '/api/health') return sendJson(response, 200, { ok: true });
+
+    if (path === '/api/auth/session') {
+      if (method === 'GET') return sendJson(response, 200, { authenticated: hasValidSession(request, auth) });
+      if (method === 'POST') return handleLogin(request, response);
+      throw new HttpError(405, 'method not allowed');
+    }
+    if (path === '/api/auth/logout') {
+      if (method === 'POST') return handleLogout(request, response);
+      throw new HttpError(405, 'method not allowed');
+    }
+
+    if (path === '/api/scenes') {
+      if (method === 'GET') return sendJson(response, 200, store.list());
+      if (method === 'POST') {
+        const document = documentFrom(await readJson(request));
+        const id = randomBytes(9).toString('base64url');
+        store.put(id, document.name, JSON.stringify(document));
+        return sendJson(response, 201, { id });
+      }
+      throw new HttpError(405, 'method not allowed');
+    }
+
+    const match = path.match(/^\/api\/scenes\/([\w-]{1,64})$/);
+    if (match) {
+      const id = match[1];
+      if (method === 'GET') {
+        const row = store.get(id);
+        if (!row) throw new HttpError(404, 'not found');
+        return sendJson(response, 200, { id, document: JSON.parse(row.document), updatedAt: row.updatedAt });
+      }
+      if (method === 'PUT') {
+        const document = documentFrom(await readJson(request));
+        const updatedAt = store.put(id, document.name, JSON.stringify(document));
+        return sendJson(response, 200, { id, updatedAt });
+      }
+      if (method === 'DELETE') {
+        store.remove(id);
+        return sendJson(response, 200, { ok: true });
+      }
+      throw new HttpError(405, 'method not allowed');
+    }
+    throw new HttpError(404, 'not found');
+  }
+
+  function serveStatic(request: IncomingMessage, response: ServerResponse, path: string): void {
+    let decoded: string;
+    try { decoded = decodeURIComponent(path); } catch { throw new HttpError(400, 'bad path'); }
+    const candidate = normalize(join(staticDirectory, decoded));
+    // Unknown paths (and directory traversal attempts) get the SPA shell.
+    const file = candidate.startsWith(staticDirectory + sep) && existsSync(candidate) && statSync(candidate).isFile()
+      ? candidate
+      : join(staticDirectory, 'index.html');
+    if (!existsSync(file)) {
+      response.writeHead(503, { 'content-type': 'text/plain' });
+      response.end('Client not built. Run `npm run build`.');
+      return;
+    }
+    const isHashedAsset = file.startsWith(join(staticDirectory, 'assets') + sep);
+    response.writeHead(200, {
+      'content-type': CONTENT_TYPES[extname(file)] ?? 'application/octet-stream',
+      'cache-control': isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'x-content-type-options': 'nosniff',
+    });
+    if (request.method === 'HEAD') { response.end(); return; }
+    createReadStream(file).pipe(response);
+  }
+
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    try {
+      // Gate everything (API *and* static) when a token is configured. The auth
+      // endpoints and the healthcheck stay reachable pre-auth.
+      if (auth.token && !isPublicPath(url.pathname) && !isAuthPath(url.pathname)) {
+        const authorized = hasValidSession(request, auth) || hasBearerToken(request, auth.token);
+        if (!authorized) {
+          if (url.pathname.startsWith('/api/')) return sendJson(response, 401, { error: 'unauthorized' });
+          return serveLoginPage(response);
+        }
+      }
+      if (url.pathname.startsWith('/api/')) await handleApi(request, response, url.pathname);
+      else serveStatic(request, response, url.pathname);
+    } catch (error) {
+      const status = error instanceof HttpError ? error.status : 500;
+      if (status === 500) console.error(error);
+      if (!response.headersSent) sendJson(response, status, { error: (error as Error).message });
+      else response.end();
+    }
   });
-  if (request.method === 'HEAD') { response.end(); return; }
-  createReadStream(file).pipe(response);
+
+  return { server, store };
 }
 
-const server = createServer(async (request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  try {
-    if (url.pathname.startsWith('/api/')) await handleApi(request, response, url.pathname);
-    else serveStatic(request, response, url.pathname);
-  } catch (error) {
-    const status = error instanceof HttpError ? error.status : 500;
-    if (status === 500) console.error(error);
-    if (!response.headersSent) sendJson(response, status, { error: (error as Error).message });
-    else response.end();
-  }
-});
-
-server.listen(port, host, () => {
-  console.log(`plinth listening on http://${host}:${port} (data: ${dataDirectory})`);
-});
-
-const shutdown = () => { server.close(); store.close(); process.exit(0); };
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+// ── Entry point ──────────────────────────────────────────────────────────────
+// Only listen when this module is the process entry (not when imported by tests).
+const entry = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (entry && import.meta.url === entry) {
+  const port = Number(process.env.PORT ?? 3000);
+  const host = process.env.HOST ?? '0.0.0.0';
+  const auth = readAuthConfig(process.env);
+  if (!auth.token) console.warn('plinth: PLINTH_TOKEN is not set — the app is UNPROTECTED');
+  const { server, store } = createAppServer({ auth });
+  server.listen(port, host, () => {
+    console.log(`plinth listening on http://${host}:${port}`);
+  });
+  const shutdown = () => { server.close(); store.close(); process.exit(0); };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}

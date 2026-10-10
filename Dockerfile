@@ -22,5 +22,8 @@ RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
 EXPOSE 3000
+# Set PLINTH_TOKEN to gate the whole app and every API behind a shared secret.
+# /api/health stays public so this healthcheck keeps working; if you gate it,
+# the container will flip to unhealthy.
 HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:3000/api/health || exit 1
 CMD ["node", "dist/server.mjs"]
