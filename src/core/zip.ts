@@ -84,3 +84,44 @@ export function createZip(entries: ZipEntry[], now = new Date()): Uint8Array {
   for (const part of parts) { output.set(part, position); position += part.length; }
   return output;
 }
+
+/**
+ * Store-only ZIP reader. Parses the end-of-central-directory record and the
+ * central directory, then copies each entry's stored (uncompressed) bytes. Reads
+ * only the store method (0) — the same shape `createZip` writes — so it stays
+ * dependency-free and needs no inflate.
+ */
+export function readZip(bytes: Uint8Array): ZipEntry[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const encoder = new TextDecoder();
+
+  let eocd = -1;
+  for (let index = Math.max(0, bytes.length - 22); index >= 0; index--) {
+    if (view.getUint32(index, true) === 0x06054b50) { eocd = index; break; }
+  }
+  if (eocd < 0) throw new Error('not a zip file: end-of-central-directory not found');
+
+  const count = view.getUint16(eocd + 10, true);
+  let offset = view.getUint32(eocd + 16, true);
+  const entries: ZipEntry[] = [];
+
+  for (let index = 0; index < count; index++) {
+    if (view.getUint32(offset, true) !== 0x02014b50) throw new Error('corrupt zip: bad central directory entry');
+    const method = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localOffset = view.getUint32(offset + 42, true);
+    const name = encoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+    if (method !== 0) throw new Error(`unsupported zip compression method ${method} for ${name}`);
+    if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error(`corrupt zip: bad local header for ${name}`);
+    const localNameLength = view.getUint16(localOffset + 26, true);
+    const localExtraLength = view.getUint16(localOffset + 28, true);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    entries.push({ name, data: bytes.slice(dataStart, dataStart + compressedSize) });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}

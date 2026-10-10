@@ -5,10 +5,12 @@ import { composeImage } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
 import { sceneProjection } from '../core/projection';
 import { renderPrimitive } from '../core/render';
+import { TILESET_CONFIG_COUNT, faceKey } from '../core/tileset';
 import type { ColorSettings, CombinatoricsSet, Palette, PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
 import {
   canShareFiles, deliverFile, exportCombinatoricsJson, exportPrimitiveKit, exportPrimitivePng, exportSceneJson, exportScenePng, exportScenePsd, rgbaToCanvas,
 } from '../lib/exporters';
+import { exportTileset } from '../lib/tileset';
 import { Icon } from './Icon';
 import { NumberField, Segmented, Toggle } from './Fields';
 
@@ -260,6 +262,7 @@ export function ExportPanel(props: {
   const [pngColor, setPngColor] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const shareable = useMemo(() => canShareFiles(), []);
+  const faceCount = useMemo(() => new Set(document.objects.map(faceKey)).size, [document.objects]);
   const [presetKey, setPresetKey] = useState(PRIMITIVE_PRESETS[0].key);
   const preset = PRIMITIVE_PRESETS.find((candidate) => candidate.key === presetKey)!;
   const [size, setSize] = useState({ width: preset.width, depth: preset.depth, height: preset.height });
@@ -418,6 +421,10 @@ export function ExportPanel(props: {
           {document.combinatorics.source?.exportedAt ? ` · exported ${document.combinatorics.source.exportedAt}` : ''}
         </p>
       )}
+
+      <h3>Tileset (image combinatorics)</h3>
+      <p className="muted small">Discrete block-image templates for drawing over in Procreate: <strong>47</strong> open-corner configurations per face (a grey isometric block with its open edges un-outlined), plus a manifest, packaged as a zip. Faces: <strong>{faceCount}</strong> · configs: <strong>{TILESET_CONFIG_COUNT}</strong>.</p>
+      {exportButton({ label: 'Tileset (.zip)', make: () => exportTileset(document, exportOptions, scale) })}
 
       <h3>Colour (rampart)</h3>
       <p className="muted small">Import a rampart palette export to add a real <strong>Base color</strong> layer under the greyscale trace layers. Colour applies only when no combinatorics set is imported.</p>
