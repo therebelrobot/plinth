@@ -8,6 +8,10 @@ export interface PrimitivePreset {
   depth: number;
   height: number;
   parameter?: number;
+  /** Walls only: 0 = flat top, 1 = full run-axis slope. */
+  slope?: number;
+  /** Walls only: which end the slope rises from. */
+  slopeDirection?: 1 | -1;
   /** Keyboard shortcut on desktop. Empty for generated tall variants. */
   shortcut: string;
   /** Height multiplier relative to the type's base preset. 1 for every non-variant. */
@@ -23,6 +27,8 @@ const BASE_PRESETS: PrimitivePreset[] = [
   { key: 'slab', label: 'Slab', type: 'block', width: 1, depth: 1, height: 0.5, shortcut: '2', tallness: 1 },
   { key: 'plate', label: 'Plate', type: 'block', width: 1, depth: 1, height: 0.25, shortcut: '3', tallness: 1 },
   { key: 'wall', label: 'Wall', type: 'wall', width: 1, depth: 1, height: 2, parameter: 0.25, shortcut: '4', tallness: 1 },
+  { key: 'wall_ramp_a', label: 'Slope wall', type: 'wall', width: 1, depth: 4, height: 2, parameter: 0.25, slope: 1, slopeDirection: 1, shortcut: '', tallness: 1 },
+  { key: 'wall_ramp_b', label: 'Slope wall ½', type: 'wall', width: 1, depth: 4, height: 2, parameter: 0.25, slope: 0.5, slopeDirection: 1, shortcut: '', tallness: 1 },
   { key: 'stairs', label: 'Stairs', type: 'stairs', width: 1, depth: 1, height: 1, parameter: 4, shortcut: '5', tallness: 1 },
   { key: 'ramp', label: 'Ramp', type: 'ramp', width: 1, depth: 1, height: 1, shortcut: '6', tallness: 1 },
   { key: 'cylinder', label: 'Cylinder', type: 'cylinder', width: 1, depth: 1, height: 1, shortcut: '7', tallness: 1 },

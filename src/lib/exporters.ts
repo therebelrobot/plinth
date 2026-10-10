@@ -89,9 +89,13 @@ export function exportScenePsd(document: SceneDocument, options: RenderOptions, 
   };
 }
 
-export function primitiveFilename(object: Pick<SceneObject, 'type' | 'width' | 'depth' | 'height' | 'rotation'>, scale: number): string {
+export function primitiveFilename(object: Pick<SceneObject, 'type' | 'width' | 'depth' | 'height' | 'rotation' | 'slope' | 'slopeDirection'>, scale: number): string {
   const size = `${object.width}x${object.depth}x${object.height}`.replace(/\./g, 'p');
-  return `${object.type}_${size}_r${object.rotation}${scale > 1 ? `@${scale}x` : ''}.png`;
+  // Sloped and flat walls share a type, so the slope must be in the name to keep kit sprites unique.
+  const slope = object.slope && object.slope > 0
+    ? `_s${String(object.slope).replace('.', 'p')}${object.slopeDirection === -1 ? 'n' : 'p'}`
+    : '';
+  return `${object.type}_${size}_r${object.rotation}${slope}${scale > 1 ? `@${scale}x` : ''}.png`;
 }
 
 export async function exportPrimitivePng(
@@ -122,6 +126,7 @@ export async function exportPrimitiveKit(
         width: rotation % 2 ? preset.depth : preset.width,
         depth: rotation % 2 ? preset.width : preset.depth,
         height: preset.height, rotation, parameter: preset.parameter,
+        slope: preset.slope, slopeDirection: preset.slopeDirection,
       };
       const name = `${preset.key}_r${rotation}`;
       if (seen.has(name)) continue;

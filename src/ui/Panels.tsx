@@ -102,6 +102,23 @@ export function ObjectPanel(props: {
         <NumberField label={spec.label} value={parameterOf(object)} step={spec.step} min={spec.min} max={spec.max} onChange={(parameter) => onChange({ parameter })} />
       )}
 
+      {object.type === 'wall' && (
+        <>
+          <NumberField label="Slope" hint="0 flat · 1 full" value={object.slope ?? 0} step={0.25} min={0} max={1} onChange={(slope) => onChange({ slope })} />
+          {(object.slope ?? 0) > 0 && (
+            <Segmented<1 | -1>
+              label="Slope rises"
+              value={object.slopeDirection ?? 1}
+              onChange={(slopeDirection) => onChange({ slopeDirection })}
+              options={[
+                { value: 1, label: '↘ low-y' },
+                { value: -1, label: '↖ high-y' },
+              ]}
+            />
+          )}
+        </>
+      )}
+
       <div className="button-row">
         <button type="button" className="button" onClick={props.onDuplicate}><Icon name="copy" size={16} /> Duplicate</button>
         <button type="button" className="button" onClick={props.onExport}><Icon name="download" size={16} /> Export alone</button>

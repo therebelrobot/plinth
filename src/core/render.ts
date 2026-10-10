@@ -65,7 +65,7 @@ function prepare(object: SceneObject, index: number, posts?: CornerPost[]): Prep
   return {
     index,
     object,
-    shape: prepareShape(object.type, a, b, object.height, parameterOf(object), posts),
+    shape: prepareShape(object.type, a, b, object.height, parameterOf(object), posts, object.slope ?? 0, object.slopeDirection ?? 1),
     directionX,
     directionY,
   };

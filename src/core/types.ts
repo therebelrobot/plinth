@@ -40,6 +40,13 @@ export interface SceneObject {
   rotation: Rotation;
   /** Type-specific: stairs = step count, wall/arch = thickness in tiles. */
   parameter?: number;
+  /**
+   * Walls only. 0 = flat top (default); 1 = full run-axis slope (ramp-like).
+   * The slope runs along the wall's length (canonical y), never its thickness.
+   */
+  slope?: number;
+  /** Walls only. Which end the slope rises from. Defaults to +1 (low-y end). */
+  slopeDirection?: 1 | -1;
 }
 
 export interface SceneSettings {

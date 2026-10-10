@@ -166,7 +166,9 @@ export interface CanonicalShape {
   b: number; // extent along canonical y
   h: number; // extent along z
   parameter: number;
-  /** Precomputed half-spaces for polyhedral types (ramp, pyramid). */
+  /** Walls only: 0 = flat top, 1 = full run-axis slope. */
+  slope: number;
+  /** Precomputed half-spaces for polyhedral types (ramp, pyramid, sloped wall). */
   planes: number[];
   /** Optional corner-post boxes (Feature 4); absent for every non-wall shape. */
   posts?: CornerPost[];
@@ -174,7 +176,7 @@ export interface CanonicalShape {
 
 export function prepareShape(
   type: PrimitiveType, a: number, b: number, h: number, parameter: number,
-  posts?: CornerPost[],
+  posts?: CornerPost[], slope = 0, slopeDirection: 1 | -1 = 1,
 ): CanonicalShape {
   let planes: number[] = [];
   if (type === 'ramp') {
@@ -190,8 +192,29 @@ export function prepareShape(
       0, -(2 * h) / b, 1, 0,
       0, (2 * h) / b, 1, 2 * h,
     ];
+  } else if (type === 'wall' && slope > 0) {
+    // Sloped wall: the ramp construction rotated onto the wall's run axis (y).
+    // The slab is x ∈ [0, thickness]; the cut plane is (0, h/(slope·b), 1, h/slope)
+    // for a rise at the low-y end, mirrored for a rise at the high-y end. A single
+    // plane covers both the full slope (slope = 1) and the partial slope with a
+    // flat shoulder at the tall end, because the box's own top plane clamps the
+    // shoulder. Convex, so it routes through intersectHalfSpaces.
+    const thickness = Math.min(parameter, a);
+    const clamped = Math.min(Math.max(slope, 0), 1);
+    planes = boxPlanes(thickness, b, h);
+    const run = clamped * b;
+    if (run > 0) {
+      const rise = h / run;
+      if (slopeDirection < 0) {
+        // Rise at the high-y end: lz ≤ (h/(slope·b))·ly.
+        planes.push(0, -rise, 1, 0);
+      } else {
+        // Rise at the low-y end: lz ≤ h/slope − (h/(slope·b))·ly.
+        planes.push(0, rise, 1, h / clamped);
+      }
+    }
   }
-  return { type, a, b, h, parameter, planes, ...(posts && posts.length > 0 ? { posts } : {}) };
+  return { type, a, b, h, parameter, slope: type === 'wall' ? slope : 0, planes, ...(posts && posts.length > 0 ? { posts } : {}) };
 }
 
 /**
@@ -211,8 +234,11 @@ export function intersectCanonical(
     case 'wall': {
       const thickness = Math.min(shape.parameter, a);
       // Union of the slab with any corner posts (Feature 4): the visible point of
-      // a union is the max over parts, exactly as the stairs case does.
-      let found = intersectBox(0, thickness, 0, b, 0, h, px, py, pz, dx, dy, dz, out);
+      // a union is the max over parts, exactly as the stairs case does. A sloped
+      // wall's slab is a convex half-space set instead of a box.
+      let found = shape.slope > 0
+        ? intersectHalfSpaces(shape.planes, px, py, pz, dx, dy, dz, out)
+        : intersectBox(0, thickness, 0, b, 0, h, px, py, pz, dx, dy, dz, out);
       let bestT = found ? out.t : -Infinity;
       let bestNx = out.nx, bestNy = out.ny, bestNz = out.nz;
       if (shape.posts) {
