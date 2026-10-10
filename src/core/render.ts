@@ -4,7 +4,7 @@
 // Every output pixel is exactly one sample at the pixel centre — no
 // antialiasing — so edges come out as the clean 2:1 staircases pixel art wants.
 
-import { analyseAdjacency, analyseWallCorners, pairStride } from './combinatorics';
+import { analyseAdjacency, analyseWallCorners, pairStride, resolveCombination } from './combinatorics';
 import { intersectCanonical, makeHit, prepareShape, type CanonicalShape, type CornerPost } from './geometry';
 import { parameterOf } from './primitives';
 import { makeProjection, sceneProjection, type Projection } from './projection';
@@ -198,9 +198,29 @@ export function renderScene(
   const wallCorners = options.mergeWallCorners === false ? null : analyseWallCorners(objects);
   // `joinPairs` is a Set of `a * stride + b` keys (both orders) the edge pass
   // consults: imported combinatorics pairs plus the derived wall corner pairs.
-  const importedPairs = combinatorics ? analyseAdjacency(objects).pairs : null;
-  if (importedPairs || wallCorners) {
-    const merged = new Set<number>(importedPairs ?? []);
+  const adjacency = combinatorics ? analyseAdjacency(objects) : null;
+  if (adjacency || wallCorners) {
+    const merged = new Set<number>();
+    if (adjacency && combinatorics) {
+      const stride = pairStride(objects.length);
+      // Spec §3(b): the imported class table is authoritative. Each object's
+      // derived mask is canonicalised and looked up; only when the class is
+      // present in the imported set are its faces open, so a set that omits a
+      // class suppresses nothing for that class. `iso-8` masks are 8-bit and
+      // cannot be derived from the 4-neighbour pass, so that scheme keeps the
+      // presence-based behaviour.
+      if (combinatorics.scheme === 'iso-8') {
+        for (const key of adjacency.pairs) merged.add(key);
+      } else {
+        const resolved = objects.map((object, index) =>
+          resolveCombination(combinatorics, object.type, adjacency.masks[index]));
+        for (const key of adjacency.pairs) {
+          const a = Math.floor(key / stride);
+          const b = key % stride;
+          if (resolved[a].combination && resolved[b].combination) merged.add(key);
+        }
+      }
+    }
     if (wallCorners) for (const key of wallCorners.pairs) merged.add(key);
     buffers.joinPairs = merged;
   }

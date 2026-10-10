@@ -10,7 +10,7 @@ import {
   buildCombinatorics, canonicalMask, neighbourMasks, parseCombinatorics, validateCombinatorics,
 } from '../src/core/combinatorics';
 import { renderScene } from '../src/core/render';
-import { DEFAULT_RENDER_OPTIONS, DEFAULT_SETTINGS, newDocument, type SceneObject } from '../src/core/types';
+import { DEFAULT_RENDER_OPTIONS, DEFAULT_SETTINGS, newDocument, type CombinatoricsSet, type SceneObject } from '../src/core/types';
 import { exportSceneJson } from '../src/lib/exporters';
 import { validDocument } from '../server/main';
 import { makeObject } from './sample-scene';
@@ -121,6 +121,30 @@ test('an imported set suppresses interior seams on a run of blocks', () => {
   const imported = renderScene(settings, objects, options, buildCombinatorics(scene(objects)));
   const count = (buffers: typeof legacy) => buffers.outline.reduce((total, value) => total + value, 0);
   assert.ok(count(imported) < count(legacy), `imported ${count(imported)} should be < legacy ${count(legacy)}`);
+});
+
+test('a set that omits a class suppresses nothing for that class (spec §3(b))', () => {
+  const settings = { ...DEFAULT_SETTINGS, floorTilesX: 4, floorTilesY: 1 };
+  const objects = [0, 1, 2].map((index) => makeObject('block', index, 0, 0));
+  const options = { ...noFloor, outlines: 'all' as const, mergeCoplanarFaces: false };
+  const legacy = renderScene(settings, objects, options);
+  // A hand-edited set that only carries `center` (mask 15). The run's blocks have
+  // `end`/`straight` masks, so the class lookup must find nothing and suppress no
+  // seams — the imported table is authoritative, not the set's mere presence.
+  const onlyCenter: CombinatoricsSet = {
+    format: 'plinth.combinatorics',
+    version: 1,
+    scheme: 'iso-4',
+    primitives: [{
+      type: 'block',
+      directional: false,
+      template: { type: 'block', width: 1, depth: 1, height: 1, rotation: 0 },
+      combinations: [{ id: 'center', mask: 15, rotations: [{ rotation: 0, mask: 15 }] }],
+    }],
+  };
+  const imported = renderScene(settings, objects, options, onlyCenter);
+  const count = (buffers: typeof legacy) => buffers.outline.reduce((total, value) => total + value, 0);
+  assert.equal(count(imported), count(legacy), 'omitted classes must not suppress seams');
 });
 
 // ── 4. persistence round-trip ─────────────────────────────────────────────────
