@@ -347,7 +347,7 @@ export function App() {
               type="button"
               className={`swatch ${tool === 'place' && presetKey === entry.key ? 'is-active' : ''}`}
               onClick={() => choosePreset(entry.key)}
-              title={`${entry.label} (${entry.shortcut})`}
+              title={entry.shortcut ? `${entry.label} (${entry.shortcut})` : entry.label}
               aria-pressed={tool === 'place' && presetKey === entry.key}
             >
               <img src={presetIcon(entry.key, DIRECTIONAL_TYPES.has(entry.type) ? placeRotation : 0)} alt="" />

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { composeImage } from '../core/compose';
-import { DIRECTIONAL_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TYPE_LABELS, parameterOf, rotatedFootprint } from '../core/primitives';
+import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
 import { sceneProjection } from '../core/projection';
 import { renderPrimitive } from '../core/render';
 import type { PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
@@ -74,6 +74,15 @@ export function ObjectPanel(props: {
         <NumberField label="Depth" hint="y" value={object.depth} step={0.25} min={0.25} max={settings.floorTilesY - object.y} onChange={(depth) => onChange({ depth })} />
         <NumberField label="Height" hint="levels" value={object.height} step={0.25} min={0.125} max={settings.levelCount - object.z} onChange={(height) => onChange({ height })} />
       </div>
+
+      {LEVEL_CHANGING_TYPES.has(object.type) && (
+        <Segmented<number>
+          label="Height variant"
+          value={object.height / baseHeight(object.type)}
+          onChange={(tallness) => onChange({ height: Number((baseHeight(object.type) * tallness).toFixed(4)) })}
+          options={TALL_VARIANTS.map((tallness) => ({ value: tallness, label: tallVariantLabel(tallness) }))}
+        />
+      )}
 
       {DIRECTIONAL_TYPES.has(object.type) && (
         <Segmented<Rotation>
