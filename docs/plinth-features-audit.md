@@ -310,3 +310,99 @@ The seven features are implemented, typecheck clean, build clean, and pass 73/73
 ### 7.4 Remaining issues
 
 - None. All five previously-flagged gaps are resolved; `npm run typecheck`, `npm test`, and `npm run build` all pass; the stray `scratch-inspect.ts` has been deleted.
+
+---
+
+## 8. Tileset rework audit (Feature 10 — image-based combinatorics)
+
+**Scope:** audit the rework against spec §10 and the requester's stated intent, per commits `59fb799` (export) and `b673164` (import). Read-only; no source changes. The stray `scratch-inspect.ts` was **not** present at the repo root (nothing to delete).
+
+### 8.1 Verification commands
+
+| Command | Result | Notes |
+|---|---|---|
+| `npm run typecheck` | **NOT RUN** | Architect mode exposes no shell/command tool, so the command could not be executed. Last recorded run (§7.1) passed. |
+| `npm test` | **NOT RUN** | Same limitation. Last recorded: 77 tests · 76 pass · 0 fail · 1 skipped. |
+| `npm run build` | **NOT RUN** | Same limitation. Last recorded: client + server built clean. |
+
+> The three commands must be run in a mode with shell access (e.g. Code) to confirm the rework. The code-level audit below is complete and independent of that.
+
+### 8.2 Per-item verdicts
+
+| # | Item | Verdict |
+|---|---|---|
+| 1 | Enumeration — open-corner rule, count 47, distribution, mask 0 | **PASS** |
+| 2 | Export — discrete PNGs + zip + manifest per §10 | **PASS** |
+| 3 | Import — load/validate/decode/persist + per-tile compositing | **PASS** |
+| 4 | Precedence — tileset > rampart colour > grey | **PASS** |
+| 5 | Build + tests | **UNVERIFIED** (no shell tool in this mode) |
+| 6 | Cross-feature interactions / regressions | **PASS** |
+| 7 | Satisfies the requester's stated intent | **PASS** |
+
+### 8.3 Evidence
+
+**1. Enumeration — PASS**
+
+- The open-corner rule is implemented directly, **not** `blobNormalize`: `openCornerNormalize` clears a diagonal bit when *either* flanking orthogonal is present ([`src/core/tileset.ts`](../src/core/tileset.ts:50)); `CORNER_FLANKS` maps NE↔(N,E), SE↔(E,S), SW↔(S,W), NW↔(W,N) ([`src/core/tileset.ts`](../src/core/tileset.ts:28)). The module imports only `analyseAdjacency`, `pairStride`, `rotateMask8` from `combinatorics` — `blobNormalize` is never referenced ([`src/core/tileset.ts`](../src/core/tileset.ts:13)).
+- `enumerateConfigs` normalizes all 256 masks and de-duplicates ([`src/core/tileset.ts`](../src/core/tileset.ts:80)); `TILESET_CONFIG_COUNT` is the array length ([`src/core/tileset.ts`](../src/core/tileset.ts:105)).
+- Count is exactly 47 and the orthogonal-popcount distribution is `{0:16, 1:16, 2:10, 3:4, 4:1}` — asserted in [`test/tileset.test.ts`](../test/tileset.test.ts:28) (lines 29–39) and re-asserted in [`test/tileset-import.test.ts`](../test/tileset-import.test.ts:52). This matches the requester's `1·16 + 4·4 + 4·2 + 2·1 + 4·1 + 1·1` and the §10(b)(1) table.
+- Mask 0 is included and named `c00` ([`test/tileset.test.ts`](../test/tileset.test.ts:42)); the doc comment records the "47 + 1 = 48 is bookkeeping" decision ([`src/core/tileset.ts`](../src/core/tileset.ts:96)).
+- Rotation equivariance under quarter turns is tested ([`test/tileset.test.ts`](../test/tileset.test.ts:57)).
+
+**2. Export — PASS**
+
+- `buildTileset` collects the distinct faces of the active scene by `faceKey` (type|width|depth|height|parameter|slope|slopeDirection) ([`src/core/tileset.ts`](../src/core/tileset.ts:504), [`src/core/tileset.ts`](../src/core/tileset.ts:614)), renders each face once, then emits one PNG per config (47) with the config's open edges un-outlined ([`src/core/tileset.ts`](../src/core/tileset.ts:637)).
+- Zip layout matches §10(b)(2): `manifest.json` first, then `tiles/<face-slug>/<config>.png` ([`src/core/tileset.ts`](../src/core/tileset.ts:645), [`src/core/tileset.ts`](../src/core/tileset.ts:682)). `exportTileset` packages via `createZip` and returns `{ blob, filename, manifest }` ([`src/lib/tileset.ts`](../src/lib/tileset.ts:26)).
+- Manifest schema matches §10: `format: 'plinth.tileset'`, `version: 1`, `generator`, `exportedAt`, `scheme: 'open-corner-8'`, `sides`, `projection`, `scale`, `configs` (the 47), `faces[]` with `slug/type/template/directional/sprites` ([`src/core/tileset.ts`](../src/core/tileset.ts:247), [`src/core/tileset.ts`](../src/core/tileset.ts:664)).
+- Drawable templates: `composeTilesetImage` composes with `background: 'transparent'` and `showFloor: false`, so the sprite is a grey isometric block ([`src/core/tileset.ts`](../src/core/tileset.ts:692)); `suppressOpenEdges` removes the outline along open orthogonal sides and at open corners ([`src/core/tileset.ts`](../src/core/tileset.ts:548)). Tested: isolated tile has fewer outline pixels than a fully-joined one ([`test/tileset.test.ts`](../test/tileset.test.ts:130)).
+- Zip contents verified: `1 + 2·47` entries, `manifest.json` present, every sprite file present, PNG magic bytes correct ([`test/tileset.test.ts`](../test/tileset.test.ts:103)).
+
+**3. Import — PASS**
+
+- `importTilesetBytes` reads the zip, requires `manifest.json`, validates via `parseTilesetManifest`, decodes every sprite PNG, and skips missing/undecodable files with a warning ([`src/lib/tileset.ts`](../src/lib/tileset.ts:77)); `importTileset` adapts a `File`/`Blob` ([`src/lib/tileset.ts`](../src/lib/tileset.ts:109)).
+- Validation rejects wrong `format`/`version`/`scheme` and malformed entries; unknown config ids and primitive types are dropped with a warning (forward-compatible) ([`src/core/tileset.ts`](../src/core/tileset.ts:347), [`src/core/tileset.ts`](../src/core/tileset.ts:274)). Tested ([`test/tileset-import.test.ts`](../test/tileset-import.test.ts:93)).
+- Persistence: decoded sprites are stored in **IndexedDB** keyed by `TilesetRef.id`, with an in-memory fallback when IDB is unavailable ([`src/lib/tileset.ts`](../src/lib/tileset.ts:179), [`src/lib/tileset.ts`](../src/lib/tileset.ts:190)); only the small `TilesetRef { id, manifest }` is persisted with the document ([`src/core/types.ts`](../src/core/types.ts:116), [`src/core/types.ts`](../src/core/types.ts:135)). The UI saves then commits the ref ([`src/ui/Panels.tsx`](../src/ui/Panels.tsx:459), [`src/App.tsx`](../src/App.tsx:453)).
+- Per-tile sprite selection: `buildTilesetPlacements` derives each object's 8-neighbour mask via `analyseAdjacency8`, normalizes with `openCornerNormalize`, and looks up the config's sprite ([`src/core/tileset.ts`](../src/core/tileset.ts:459), [`src/core/tileset.ts`](../src/core/tileset.ts:477)). The viewport loads sprites and passes placements into `composeImage` ([`src/ui/Viewport.tsx`](../src/ui/Viewport.tsx:111), [`src/ui/Viewport.tsx`](../src/ui/Viewport.tsx:133)).
+- Compositing: `sampleSprite` anchors the sprite at the object's footprint back corner, scales from the tileset tile size to the scene's, and returns the sprite RGBA only when the pixel is opaque ([`src/core/compose.ts`](../src/core/compose.ts:121)); an opaque pixel replaces grey, a transparent pixel falls back to grey ([`src/core/compose.ts`](../src/core/compose.ts:221)). Tested both ways ([`test/tileset-import.test.ts`](../test/tileset-import.test.ts:99)).
+- Rotation: the exporter emits rotation 0; the importer rotates the sprite and its anchor for directional faces ([`src/core/tileset.ts`](../src/core/tileset.ts:409), [`src/core/tileset.ts`](../src/core/tileset.ts:481)). Tested with a non-square sprite ([`test/tileset-import.test.ts`](../test/tileset-import.test.ts:146)).
+- Missing-sprite fallback: a face with no sprites, or an absent face, resolves to `null` → grey, byte-identical to no tileset ([`src/core/tileset.ts`](../src/core/tileset.ts:480), [`test/tileset-import.test.ts`](../test/tileset-import.test.ts:133)).
+
+**4. Precedence — PASS**
+
+- Grey path: `composeImage` samples the sprite first and only falls back to `toneAt` grey when the sprite pixel is transparent/absent ([`src/core/compose.ts`](../src/core/compose.ts:221)).
+- Colour path: `composeColorImage` prefers the sprite over the palette colour ([`src/core/compose.ts`](../src/core/compose.ts:188)).
+- PSD base layer: `composeLayers` prefers the sprite over the palette colour in the `Base color` layer ([`src/core/compose.ts`](../src/core/compose.ts:284)).
+- So **tileset > rampart colour > grey** holds in all three compose paths, and the UI states it ([`src/ui/Panels.tsx`](../src/ui/Panels.tsx:449)).
+
+**5. Build + tests — UNVERIFIED**
+
+- Not runnable from architect mode (no shell tool). See §8.1. The prior audit's last recorded run (§7.1) passed; the rework adds `test/tileset.test.ts` and `test/tileset-import.test.ts`, which are consistent with the implementation.
+
+**6. Cross-feature interactions — PASS**
+
+- **JSON combinatorics edge-suppression:** unchanged and independent. `renderScene` still builds `joinPairs` from the imported set (iso-4 via `resolveCombination`, iso-8 presence-based) plus derived wall corners ([`src/core/render.ts`](../src/core/render.ts:213), [`src/core/render.ts`](../src/core/render.ts:224)). The tileset is applied later, at compose time, so the two do not interfere. The tileset's 8-neighbour `analyseAdjacency8` is a separate pass from the JSON set's 4-neighbour `analyseAdjacency`.
+- **Rampart colour:** `colorActive` still gates colour on the absence of a combinatorics set; the tileset is orthogonal and, where opaque, overrides the palette colour (item 4). No regression.
+- **No-tileset regression guard:** with `extras.tileset` undefined the compose path is byte-identical to before ([`test/tileset-import.test.ts`](../test/tileset-import.test.ts:133)).
+- **Slope-aware faces:** both `faceKey` (export) and `templateKey` (import) include `slope`/`slopeDirection`, so sloped and flat walls are distinct faces and match correctly ([`src/core/tileset.ts`](../src/core/tileset.ts:401), [`src/core/tileset.ts`](../src/core/tileset.ts:504)).
+
+**7. Requester's intent — PASS**
+
+- "for all the faces used in the active scene, a set of discrete block images representing all permutations of how they match up" → `buildTileset` emits 47 discrete PNGs per distinct scene face ([`src/core/tileset.ts`](../src/core/tileset.ts:614), [`src/core/tileset.ts`](../src/core/tileset.ts:637)).
+- "import a finished set drawn in Procreate and display them on the appropriate tile instead of the gray textures" → `importTileset` + `buildTilesetPlacements` + `composeImage` replace the grey texture per tile by its neighbour config ([`src/lib/tileset.ts`](../src/lib/tileset.ts:77), [`src/core/tileset.ts`](../src/core/tileset.ts:459), [`src/core/compose.ts`](../src/core/compose.ts:221)).
+
+### 8.4 Prioritized gaps / follow-ups
+
+**Low**
+
+1. **Importer does not validate PNG dimensions against the manifest.** §10(b)(3) required "PNG dimensions match the manifest (or are a known multiple)". `importTilesetBytes` decodes and uses the decoded dimensions, ignoring the manifest's `width`/`height`, so a wrong-size PNG is accepted silently ([`src/lib/tileset.ts`](../src/lib/tileset.ts:96)). Add a dimension check (warn or reject).
+2. **`templateKey` / `faceKey` duplication.** The import-side `templateKey` ([`src/core/tileset.ts`](../src/core/tileset.ts:401)) and export-side `faceKey` ([`src/core/tileset.ts`](../src/core/tileset.ts:504)) are the same key built twice; a single shared helper would prevent drift.
+3. **No end-to-end export→import→compose test with real PNGs.** The zip round-trip uses a fake encoder/decoder ([`test/tileset-import.test.ts`](../test/tileset-import.test.ts:69)); the canvas PNG path ([`src/lib/tileset.ts`](../src/lib/tileset.ts:13), [`src/lib/tileset.ts`](../src/lib/tileset.ts:54)) is untested (DOM-only, so acceptable, but worth a note).
+
+**Informational (not defects)**
+
+4. §10(b)(2) suggested reusing the `joinPairs` mechanism for open-face flags; the implementation instead uses a dedicated per-config pixel pass, `suppressOpenEdges` ([`src/core/tileset.ts`](../src/core/tileset.ts:548)). This is a reasonable, arguably cleaner alternative and is tested; the spec text could be updated to record it.
+5. The three verification commands remain to be run in a shell-capable mode (§8.1).
+
+### 8.5 Overall verdict
+
+**PASS.** The rework implements the requester's open-corner enumeration (47 configs, distribution `{0:16,1:16,2:10,3:4,4:1}`, mask 0 included), exports discrete drawable PNG templates per scene face as a zip + manifest matching §10, imports and persists them (IndexedDB) with per-tile neighbour-config compositing, rotation handling, and grey fallback, and enforces **tileset > rampart colour > grey** in every compose path. It coexists cleanly with the retained JSON combinatorics edge-suppression and the rampart colour layer. The only open items are three low-severity follow-ups and the unrun build/test commands.

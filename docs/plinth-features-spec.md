@@ -289,6 +289,14 @@ Unit-test the HMAC round-trip and `isPublicPath` directly as pure functions.
 
 ## Feature 2 — COMBINATORICS EXPORT
 
+> **SUPERSEDED for the requester's intent — see §10.** The requester has clarified that
+> "export/import combinatorics" means an **image tileset** (discrete PNG block images, one
+> per neighbour-match permutation), **not** this JSON metadata document. This section and
+> §3 are retained only because the JSON set still drives the renderer's edge-suppression
+> pass (`joinPairs`, [`src/core/render.ts`](src/core/render.ts:201)) and Feature 4's
+> wall-corner joins. They are **not** the deliverable the requester asked for. The
+> image-tileset design is §10.
+
 ### 2(a) Current behavior
 
 - The primitive model is a flat `SceneObject` ([`src/core/types.ts`](src/core/types.ts:22) and §0.2). There is no notion of how tiles connect to neighbours.
@@ -425,6 +433,11 @@ New `test/combinatorics.test.ts`:
 ---
 
 ## Feature 3 — COMBINATORICS IMPORT (as primitive surfaces)
+
+> **SUPERSEDED for the requester's intent — see §10.** As with §2, the requester's
+> "import combinatorics" means loading a finished **image tileset** and displaying the
+> correct tile image per neighbour configuration, **not** importing this JSON surface map.
+> Retained for the renderer's edge pass; the image-tileset import is §10.
 
 ### 3(a) Current behavior
 
@@ -1147,3 +1160,390 @@ New `test/color.test.ts` + `test/rampart-import.test.ts`:
 - **Spec fidelity (repo rule `06-working-from-spec`):** if an implementation task cannot
   follow this spec for a technical reason, it MUST surface the conflict, propose an
   alternative, and update this document **before** continuing on the alternative.
+
+---
+
+## Feature 10 — IMAGE-BASED COMBINATORICS (TILESET EXPORT / IMPORT)
+
+> **This is the requester's actual deliverable.** §2/§3 (JSON metadata) are superseded for
+> the requester's intent; this section defines the **image tileset**: for every face used in
+> the active scene, a set of discrete PNG block images, one per neighbour-match permutation
+> (the 47-config set), that the user draws over in Procreate and re-imports to replace the
+> grey textures in the viewport.
+
+### 10(a) Current behavior (evidence)
+
+- **What a "face"/"tile" is.** The scene is a list of `SceneObject`s
+  ([`src/core/types.ts`](src/core/types.ts:27)); each is a 3D primitive (block, wall, …) with
+  a footprint in tiles and a height in levels. There is no dedicated "terrain tile" type; the
+  closest is a `block` (a 1×1×1 cube, [`src/core/primitives.ts`](src/core/primitives.ts:26)).
+  A **face** in this design = a **distinct primitive template** — the same keying the JSON
+  exporter already uses: `type|width|depth|height|parameter`
+  ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:193)).
+- **How the grey textures are produced.** `renderScene` raycasts every object into a z-buffer
+  ([`src/core/render.ts`](src/core/render.ts:189)); `composeImage` then writes a **grey 0–255**
+  per covered pixel via `toneAt` ([`src/core/compose.ts`](src/core/compose.ts:34),
+  [`src/core/compose.ts`](src/core/compose.ts:142)). The grey ramps are
+  `OBJECT_RAMP = [64, 232]`, `FLOOR_RAMP = [118, 204]`, `OUTLINE_GREY = 34`
+  ([`src/core/compose.ts`](src/core/compose.ts:17)). There is **no per-object texture anywhere**.
+- **Isometric tile geometry.** `makeProjection` ([`src/core/projection.ts`](src/core/projection.ts:36)):
+  `halfTile = tileWidth/2`, `quarterTile = tileWidth/4`, `levelHeight = levelHeightPixels`.
+  A 1×1×1 block's screen bounding box is `tileWidth` wide and `tileWidth/2 + levelHeight`
+  tall (top diamond + one level of side). At the defaults (`tileWidthPixels = 32`,
+  `levelHeightPixels = 16`, [`src/core/types.ts`](src/core/types.ts:146)) that is **32×32 px**.
+  The top face is a diamond `tileWidth × tileWidth/2`; the two visible side faces are
+  parallelograms `tileWidth/2 × levelHeight`.
+- **Adjacency today is 4-neighbour only.** `analyseAdjacency`
+  ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:402)) derives a 4-bit mask (N/E/S/W)
+  via `abuttingDirection` ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:371)); there
+  is **no diagonal adjacency**.
+- **The existing `iso-8` rule is the classic blob rule, not the requester's.**
+  `blobNormalize` ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:124)) keeps a
+  diagonal only when **both** adjacent orthogonals are **present** (`DIAGONAL_REQUIRES`,
+  [`src/core/combinatorics.ts`](src/core/combinatorics.ts:116)). The requester's rule is the
+  opposite: a diagonal matters only when both flanking orthogonals are **absent**. Both rules
+  yield 47 classes, but they are **different tile sets** (the classic rule's corner tiles are
+  inner corners; the requester's are outer/concave corners). The tileset enumeration MUST use
+  the requester's rule.
+
+### 10(b) Proposed design
+
+#### 10(b)(1) The 47-configuration enumeration (requester's open-corner rule)
+
+For an 8-bit neighbour mask `m` (bit order `N,NE,E,SE,S,SW,W,NW`, matching `SIDES_8`,
+[`src/core/combinatorics.ts`](src/core/combinatorics.ts:33)):
+
+- Orthogonal bits: N=0, E=2, S=4, W=6.
+- Diagonal bits: NE=1, SE=3, SW=5, NW=7.
+- A corner is **open** iff both flanking orthogonals are **absent**:
+  - NE open ⇔ N absent ∧ E absent
+  - SE open ⇔ E absent ∧ S absent
+  - SW open ⇔ S absent ∧ W absent
+  - NW open ⇔ W absent ∧ N absent
+
+`openCornerNormalize(m)` clears every diagonal bit whose corner is **not** open (i.e. keeps a
+diagonal only at an open corner). This is the requester's rule.
+
+Count (per the requester, verified):
+
+| orthogonals present | configs | open corners | variants each | subtotal |
+|---|---|---|---|---|
+| 0 | 1 | 4 | 16 | 16 |
+| 1 | 4 | 2 | 4 | 16 |
+| 2 adjacent | 4 | 1 | 2 | 8 |
+| 2 opposite | 2 | 0 | 1 | 2 |
+| 3 | 4 | 0 | 1 | 4 |
+| 4 | 1 | 0 | 1 | 1 |
+| **total** | | | | **47** |
+
+The enumeration is `{ openCornerNormalize(m) : m ∈ [0,256) }`, which has exactly **47**
+distinct values. The fully-empty tile (mask 0) is **one of the 47** (the "0 orthogonals,
+0 diagonals" config). The "47 + 1 = 48" variant counts the empty tile separately as a
+background/no-tile entry; this is bookkeeping, not mathematics — this design includes it in
+the 47 and documents the choice.
+
+**Rotation canonicalization.** Unlike the code comment at
+[`src/core/combinatorics.ts`](src/core/combinatorics.ts:154) (which claims the blob rule is
+not rotation-equivariant), the open-corner rule **is** rotation-equivariant: rotating the mask
+rotates the orthogonals and diagonals together, and the open-corner predicate is preserved.
+So the 47 normalized masks form rotation orbits. For naming/lookup we canonicalize by the
+numerically smallest of the four quarter-turn rotations (`rotateMask8`,
+[`src/core/combinatorics.ts`](src/core/combinatorics.ts:110)); for export we emit all 47 (each
+as its own image), and for import we look up the exact normalized mask (with an optional
+rotation fallback for partial tilesets).
+
+**Naming.** Each config id = the normalized 8-bit mask as two lowercase hex digits, e.g.
+`c00` (empty), `c01` (lone NE at an open corner), `c0f` (N+E+S+W). The manifest also records
+the orthogonal mask and the diagonal mask separately for readability.
+
+#### 10(b)(2) EXPORT design
+
+**Faces used in the active scene.** Reuse the template keying from `buildCombinatorics`
+([`src/core/combinatorics.ts`](src/core/combinatorics.ts:193)): distinct
+`type|width|depth|height|parameter` (extend the key with `slope`/`slopeDirection` so sloped
+walls are distinct, since slope changes the sprite). Each distinct template is one **face**.
+
+**Rendering each configuration to a discrete PNG.** For each face and each of the 47 configs,
+render a **template sprite**:
+
+- Render the face's primitive in isolation with `renderPrimitive`
+  ([`src/core/render.ts`](src/core/render.ts:238)), which crops exactly to the object's
+  bounding box at the scene's tile size.
+- Apply the config's open-face flags to the edge pass so open orthogonal sides draw no outline
+  (reuse the `joinPairs` mechanism, [`src/core/render.ts`](src/core/render.ts:201)); for open
+  corners with a diagonal present, suppress the corner outline; for open corners without a
+  diagonal, keep it. (Implementation MAY start with orthogonal-only suppression and add corner
+  suppression in a follow-up; the manifest still records the full config.)
+- Compose to RGBA with `composeImage` ([`src/core/compose.ts`](src/core/compose.ts:142)) and
+  encode PNG via the existing `rgbaToPng`/`canvasToPng` path
+  ([`src/lib/exporters.ts`](src/lib/exporters.ts:27)).
+- The sprite is the **tile silhouette template** the user draws over in Procreate: a grey
+  isometric block, cropped to its bounds, with the config's open edges left un-outlined so the
+  artist can see which sides join.
+
+**Resolution.** Default 1× (pixel-exact, e.g. 32×32 for a 1×1×1 block at default settings);
+the existing `scale` control ([`src/ui/Panels.tsx`](src/ui/Panels.tsx:310)) offers
+1×/2×/4×/8× nearest-neighbour upscale ([`src/core/compose.ts`](src/core/compose.ts:247)). The
+manifest records the scale and the 1× dimensions.
+
+**Zip layout + manifest schema.**
+
+```
+plinth-tileset_<tileWidth>px[_@Nx].zip
+├── manifest.json
+└── tiles/
+    ├── <face-slug>/
+    │   ├── c00.png
+    │   ├── c01.png
+    │   └── … (47 per face)
+    └── …
+```
+
+`manifest.json`:
+
+```jsonc
+{
+  "format": "plinth.tileset",
+  "version": 1,
+  "generator": "plinth",
+  "exportedAt": "2026-10-10T00:00:00.000Z",
+  "scheme": "open-corner-8",          // the requester's rule
+  "sides": ["N","NE","E","SE","S","SW","W","NW"],
+  "projection": { "tileWidthPixels": 32, "levelHeightPixels": 16 },
+  "scale": 1,
+  "configs": [                         // the 47, shared across faces
+    { "id": "c00", "mask": 0,  "ortho": 0,  "diag": 0,  "openCorners": ["NE","SE","SW","NW"] },
+    { "id": "c01", "mask": 1,  "ortho": 0,  "diag": 1,  "openCorners": ["NE","SE","SW","NW"] }
+    // … 47 entries
+  ],
+  "faces": [
+    {
+      "slug": "block_1x1x1",
+      "type": "block",
+      "template": { "type": "block", "width": 1, "depth": 1, "height": 1, "rotation": 0 },
+      "directional": false,
+      "sprites": {                     // config id → file + geometry
+        "c00": { "file": "tiles/block_1x1x1/c00.png", "width": 32, "height": 32, "anchorX": 16, "anchorY": 16 }
+        // … 47
+      }
+    }
+  ]
+}
+```
+
+- `anchorX/anchorY` = the screen position, within the sprite, of the tile's footprint origin
+  (back corner) at ground level — the same anchor convention as `kit.json`
+  ([`src/lib/exporters.ts`](src/lib/exporters.ts:144)). This lets the importer place the sprite
+  on the grid.
+- `directional` (from `DIRECTIONAL_TYPES`, [`src/core/primitives.ts`](src/core/primitives.ts:103))
+  flags faces whose look changes with rotation; the exporter emits the template at rotation 0
+  and the importer rotates the sprite (or the exporter MAY emit per-rotation variants — see
+  risks).
+
+**Procreate workflow.** The user opens the zip, imports each `c*.png` as a layer/canvas in
+Procreate, draws the tile art over the grey template (keeping the silhouette and the open-edge
+hints), and exports the finished PNGs back with the same filenames. The manifest is the
+contract: filenames + config ids must be preserved.
+
+#### 10(b)(3) IMPORT design
+
+**File format.** The same zip + `manifest.json`. Import accepts the zip (or a folder of PNGs +
+manifest). Validation:
+
+- `format === 'plinth.tileset'`, `version === 1`, `scheme === 'open-corner-8'`.
+- Every `faces[].sprites[].file` exists in the zip; every config id is one of the 47.
+- PNG dimensions match the manifest (or are a known multiple of the 1× size).
+- Unknown faces/configs are ignored with a warning (forward-compatible), mirroring
+  `validateCombinatorics` ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:272)).
+
+**Computing each tile's configuration at render time.** Extend adjacency to 8 neighbours:
+
+- New `analyseAdjacency8(objects)` (in `src/core/tileset.ts`) reuses the spatial hash of
+  `analyseAdjacency` ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:402)) and adds
+  **corner-touching** detection: two compatible objects are diagonal neighbours when their
+  footprints touch at a corner (share a point within `ADJACENCY_TOLERANCE`,
+  [`src/core/combinatorics.ts`](src/core/combinatorics.ts:355)) and their vertical spans match.
+  Produces an 8-bit mask per object.
+- Normalize with `openCornerNormalize`, look up the face's sprite for the resulting config id.
+
+**Compositing the imported image onto the tile.** The viewport renders the whole scene into one
+buffer ([`src/ui/Viewport.tsx`](src/ui/Viewport.tsx:98),
+[`src/ui/Viewport.tsx`](src/ui/Viewport.tsx:112)). Two viable approaches:
+
+- **Preferred — per-pixel sprite sampling in `composeImage`.** Extend `composeImage` to accept
+  an optional tileset + per-object config. For a pixel owned by object `O`, compute the
+  sprite-local coordinate `(pixelX − bboxLeft(O), pixelY − bboxTop(O))` (the same bbox math as
+  `rasterise`, [`src/core/render.ts`](src/core/render.ts:110)), sample `O`'s sprite; if the
+  sprite pixel is opaque, write its RGB(A); if transparent, fall back to the grey tone. This
+  keeps the existing z-buffer occlusion exactly (the sprite is only sampled where the object
+  already won the pixel) and needs no new draw order.
+- **Alternative — sprite overlay pass.** After `composeImage`, draw each object's sprite at its
+  projected bbox with a depth test. More code, and it must re-derive occlusion; not recommended.
+
+**Scaling / anchoring.** The sprite is drawn at the object's screen bbox. If the scene's
+`tileWidthPixels` differs from the tileset's, scale the sprite by
+`sceneTileWidth / tilesetTileWidth` (nearest-neighbour,
+[`src/core/compose.ts`](src/core/compose.ts:247)) and re-anchor at `anchorX/anchorY × scale`.
+If the sprite's bbox does not match the object's bbox (e.g. the user drew a taller tile), anchor
+at the footprint origin and let the sprite extend upward; document that the exporter's
+dimensions are the contract.
+
+**Transparency.** Sprites are RGBA; alpha 0 = "no art here" → fall back to the grey tone (or
+transparent, per the background mode). This lets the user draw only the parts they care about.
+
+**Fallback when an image is missing.** If a face has no tileset, or a config has no sprite,
+render that tile with the existing grey texture (today's behaviour). A missing tileset never
+breaks rendering.
+
+#### 10(b)(4) Interaction with the JSON combinatorics and rampart colour
+
+- **JSON combinatorics (§2/§3):** retained for the renderer's edge-suppression pass
+  (`joinPairs`, [`src/core/render.ts`](src/core/render.ts:201)) and Feature 4's wall-corner
+  joins. It is **not** the requester's deliverable. The image tileset is additive and
+  independent; a scene MAY have both. The tileset's enumeration uses the requester's open-corner
+  rule; the JSON set's `iso-8` uses the classic blob rule — they are different and MUST NOT be
+  conflated.
+- **Rampart colour (§7):** the tileset is the user's finished art and takes visual precedence.
+  When a tileset is active, the grey/colour fill for tiled objects is replaced by the sprite;
+  the rampart `Base color` layer is suppressed for those objects (or the tileset is composited
+  over it). The greyscale trace layers remain for non-tiled objects. Document the precedence:
+  **tileset > rampart colour > grey**.
+
+#### 10(b)(5) Types, modules, UI, server, tests
+
+**New module `src/core/tileset.ts`** (pure, no DOM):
+
+- `openCornerNormalize(mask)`, `openCorners(mask)`, `TILESET_CONFIGS` (the 47),
+  `canonicalTilesetMask(mask)`.
+- `analyseAdjacency8(objects)` → 8-bit masks.
+- Manifest types: `TilesetManifest`, `TilesetFace`, `TilesetConfig`, `TilesetSprite`.
+- `parseTilesetManifest(value)` / `validateTilesetManifest` (mirrors `validateCombinatorics`).
+
+**New module `src/lib/tileset.ts`** (DOM-side):
+
+- `exportTileset(document, options, scale)` → `{ blob, filename }` (zip via `createZip`,
+  [`src/core/zip.ts`](src/core/zip.ts:31)).
+- `importTileset(file)` → `{ manifest, sprites: Map<faceSlug, Map<configId, ImageData>> }`
+  (unzip + decode PNGs; needs a small store-only zip **reader** — the current `zip.ts` is
+  write-only, so add `readZip(bytes)`).
+
+**Type changes** ([`src/core/types.ts`](src/core/types.ts:109)):
+
+```ts
+export interface TilesetRef {
+  id: string;                 // key into IndexedDB where the decoded sprites live
+  manifest: TilesetManifest;  // small; persisted with the document
+}
+export interface SceneDocument {
+  // …existing…
+  tileset?: TilesetRef;
+}
+```
+
+- **Image storage:** decoded sprites are large; store them in **IndexedDB** keyed by
+  `TilesetRef.id` (like the existing localStorage drafts, [`src/lib/api.ts`](src/lib/api.ts:46))
+  and persist only the manifest in the document. This keeps the SQLite whole-document model
+  small and avoids base64 bloat. Trade-off: the tileset does not sync across devices — the user
+  re-imports. (Alternative: base64 in the document; rejected for size.)
+
+**UI** ([`src/ui/Panels.tsx`](src/ui/Panels.tsx:248)):
+
+- Export panel: a "Tileset (.zip)" button (next to "Combinatorics (JSON)") and a face/config
+  count readout.
+- Import panel: an "Import tileset" file control (accept `.zip`), a status line (faces, configs,
+  active), and a Clear action.
+- Viewport: no new controls; the compositing is automatic when a tileset is active.
+
+**Server:** no change. The manifest is optional in the document; `validDocument`
+([`server/main.ts`](server/main.ts:64)) MAY be extended to shape-check `tileset.manifest` when
+present (recommended, consistent with §3(e)/§7(e)). Images are never sent to the server.
+
+**Tests** — new `test/tileset.test.ts`:
+
+1. `TILESET_CONFIGS.length === 47`; the per-orthogonal-config variant counts match the table
+   (1·16 + 4·4 + 4·2 + 2·1 + 4·1 + 1·1).
+2. `openCornerNormalize` keeps a diagonal only at an open corner; the empty mask is in the 47.
+3. Rotation equivariance:
+   `openCornerNormalize(rotateMask8(m, r)) === rotateMask8(openCornerNormalize(m), r)`.
+4. `analyseAdjacency8` on a hand-built 3×3 block grid yields the expected 8-bit masks.
+5. Manifest round-trips through JSON; `parseTilesetManifest` rejects wrong
+   `format`/`version`/`scheme`.
+6. `exportTileset` produces a zip with `manifest.json` + 47 PNGs per face; the zip reads back
+   with `readZip`.
+7. Compositing: a scene with a tileset renders the sprite's RGB where the sprite is opaque and
+   the grey tone where it is transparent; a missing sprite falls back to grey (regression guard).
+8. A scene with no tileset renders byte-identically to today (regression guard).
+
+### 10(c) Files to change
+
+| File | Change |
+|---|---|
+| `src/core/tileset.ts` (new) | Enumeration, normalization, 8-neighbour adjacency, manifest types + validation. |
+| [`src/core/zip.ts`](src/core/zip.ts:31) | Add `readZip(bytes)` (store-only reader) alongside `createZip`. |
+| `src/lib/tileset.ts` (new) | `exportTileset`, `importTileset`, IndexedDB sprite store. |
+| [`src/core/compose.ts`](src/core/compose.ts:142) | `composeImage` gains an optional tileset + per-object config; per-pixel sprite sampling with grey fallback. |
+| [`src/core/render.ts`](src/core/render.ts:189) | Expose per-object screen bboxes (or a helper) for sprite sampling; optionally accept open-face flags for template rendering. |
+| [`src/core/types.ts`](src/core/types.ts:109) | `TilesetRef`, `SceneDocument.tileset?`. |
+| [`src/ui/Panels.tsx`](src/ui/Panels.tsx:248) | Tileset export button, import control, status. |
+| [`src/ui/Viewport.tsx`](src/ui/Viewport.tsx:98) | Thread the active tileset into `composeImage`. |
+| [`src/App.tsx`](src/App.tsx:444) | Thread tileset import/clear through `history.commit`. |
+| [`server/main.ts`](server/main.ts:64) | *Optional:* shape-check `tileset.manifest`. |
+
+### 10(d) Data model / type changes
+
+- `TilesetRef { id, manifest }`; `SceneDocument.tileset?`.
+- `TilesetManifest`, `TilesetFace`, `TilesetConfig`, `TilesetSprite` in `src/core/tileset.ts`.
+- No change to `SceneObject`/`SceneSettings`.
+
+### 10(e) API endpoints / server changes
+
+- None required. Images live client-side (IndexedDB). Optional `validDocument` extension.
+
+### 10(f) Test coverage
+
+See 10(b)(5).
+
+### 10(g) Risks / edge cases
+
+- **Multi-tile objects.** The 8-neighbour model assumes unit tiles. Walls and stretched blocks
+  span multiple tiles; define the configuration from the object's footprint edges (per-object,
+  not per-tile) or scope the tileset to unit-footprint faces. **Assumption:** the tileset applies
+  to unit-footprint faces (blocks/tiles); multi-tile faces get a single configuration from their
+  overall footprint. Confirm with the requester.
+- **Diagonal adjacency for non-unit footprints.** Corner-touching must be defined precisely
+  (shared corner point within tolerance + matching vertical span). Test with L-shaped and offset
+  footprints.
+- **Rule mismatch.** The requester's open-corner rule differs from the code's classic blob rule
+  ([`src/core/combinatorics.ts`](src/core/combinatorics.ts:124)); both give 47 but different
+  tiles. The tileset MUST use the open-corner rule; do not reuse `blobNormalize`.
+- **Rotation-equivariance comment is wrong.** [`src/core/combinatorics.ts`](src/core/combinatorics.ts:154)
+  claims the blob rule is not rotation-equivariant; it is. The open-corner rule is too, so
+  rotation-orbit canonicalization is valid.
+- **Sprite size drift.** If the user draws at a different size or the scene tile size changes,
+  scaling/anchoring must be explicit; the manifest's `anchorX/anchorY` + `projection` are the
+  contract.
+- **Directional faces.** A wall's sprite differs by rotation; the exporter emits rotation 0 and
+  the importer rotates, OR the exporter emits per-rotation variants (47 × 4 = 188 images per
+  directional face). **Assumption:** emit rotation 0 and rotate at import; confirm.
+- **Zip reader.** `zip.ts` is write-only today; a store-only reader is needed. Keep it
+  dependency-free (parse the central directory; no deflate).
+- **Performance.** 47 sprites per face; per-pixel sampling adds a lookup per covered pixel.
+  Cache decoded sprites; sample with integer math. Large scenes (20 000 objects,
+  [`server/main.ts`](server/main.ts:69)) must stay O(pixels).
+- **IndexedDB availability.** Private-mode Safari may restrict it; fall back to in-memory
+  (tileset lost on reload) with a warning.
+- **47 vs 48 bookkeeping.** The empty tile is one of the 47; document that a consumer wanting
+  "47 + 1" adds a separate background entry.
+- **Procreate round-trip.** Filenames/config ids must survive Procreate's export; the manifest is
+  the contract. Provide a "verify tileset" action that reports missing/extra files.
+
+### 10(h) Open questions / assumptions
+
+- Confirm "face" = distinct primitive template (type + footprint + height + parameter + slope),
+  not just `type`.
+- Confirm the tileset applies to unit-footprint tiles; how should multi-tile objects (walls) be
+  handled?
+- Confirm directional faces: rotate at import (47 images) vs per-rotation export (188 images)?
+- Confirm image persistence: IndexedDB (recommended) vs base64 in the document?
+- Confirm whether the JSON combinatorics (§2/§3) should be removed from the UI or kept alongside
+  the tileset.
