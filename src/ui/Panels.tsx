@@ -257,6 +257,7 @@ export function ExportPanel(props: {
   const { document, options, notify } = props;
   const [scale, setScale] = useState(1);
   const [scheme, setScheme] = useState<CombinatoricsScheme>('iso-4');
+  const [pngColor, setPngColor] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const shareable = useMemo(() => canShareFiles(), []);
   const [presetKey, setPresetKey] = useState(PRIMITIVE_PRESETS[0].key);
@@ -308,7 +309,18 @@ export function ExportPanel(props: {
       <p className="muted small">1× is pixel-exact. Larger scales are nearest-neighbour, for canvases that aren't pixel-sized.</p>
 
       <h3>Scene</h3>
-      {exportButton({ label: 'PNG', make: () => exportScenePng(document, exportOptions, scale) })}
+      {document.palette && (
+        <Segmented<'grey' | 'colour'>
+          label="PNG values"
+          value={pngColor ? 'colour' : 'grey'}
+          onChange={(value) => setPngColor(value === 'colour')}
+          options={[
+            { value: 'grey', label: 'Grey', title: 'Greyscale trace' },
+            { value: 'colour', label: 'Colour', title: 'Base colour from the imported palette' },
+          ]}
+        />
+      )}
+      {exportButton({ label: 'PNG', make: () => exportScenePng(document, exportOptions, scale, pngColor) })}
       {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale) })}
       <p className="muted small">The PSD has floor, grid, one layer per level and lines as separate layers. Procreate opens it with layers intact. Cutaway is ignored on export.</p>
 
