@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { parseRampartPalette } from '../core/color';
+import { parseRampartPalette, sharedShadow } from '../core/color';
 import { parseCombinatorics, type CombinatoricsScheme } from '../core/combinatorics';
 import { composeImage } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
@@ -285,6 +285,13 @@ export function ExportPanel(props: {
 
   const exportOptions = { ...options, hideAboveLevel: null };
 
+  // Merge into the existing colour settings so outline/floor overrides survive
+  // unrelated edits (enable, assign, ramp size).
+  const setColorSettings = (patch: Partial<ColorSettings>) => {
+    const base: ColorSettings = document.colorSettings ?? { enabled: true, assign: 'cycle' };
+    props.onColorSettings({ ...base, ...patch });
+  };
+
   const exportButton = (buttonProps: { label: string; make: () => Promise<{ blob: Blob; filename: string }> | { blob: Blob; filename: string } }) => (
     <div className="export-action" key={buttonProps.label}>
       <button type="button" className="button primary" disabled={busy !== null} onClick={() => run(buttonProps.label, buttonProps.make)}>
@@ -426,7 +433,7 @@ export function ExportPanel(props: {
               const palettes = parseRampartPalette(await file.text(), (message) => warnings.push(message));
               const palette = palettes[0];
               props.onPalette(palette);
-              props.onColorSettings({ enabled: true, assign: document.colorSettings?.assign ?? 'cycle', rampSize: document.colorSettings?.rampSize });
+              setColorSettings({ enabled: true });
               notify(`Imported palette "${palette.name}" (${palette.colors.length} colours)${warnings.length ? ` — ${warnings.join('; ')}` : ''}`);
             } catch (error) {
               notify(`Import failed: ${(error as Error).message}`);
@@ -446,18 +453,28 @@ export function ExportPanel(props: {
               <span key={`${color}-${index}`} className="swatch" style={{ background: color }} title={color} />
             ))}
           </div>
-          <Toggle label="Colour base layer" hint="adds a Base color layer to PSD/PNG exports" checked={Boolean(document.colorSettings?.enabled)} onChange={(enabled) => props.onColorSettings({ enabled, assign: document.colorSettings?.assign ?? 'cycle', rampSize: document.colorSettings?.rampSize })} />
+          <Toggle label="Colour base layer" hint="adds a Base color layer to PSD/PNG exports" checked={Boolean(document.colorSettings?.enabled)} onChange={(enabled) => setColorSettings({ enabled })} />
           <Segmented<ColorSettings['assign']>
             label="Assign ramps"
             value={document.colorSettings?.assign ?? 'cycle'}
-            onChange={(assign) => props.onColorSettings({ enabled: document.colorSettings?.enabled ?? true, assign, rampSize: document.colorSettings?.rampSize })}
+            onChange={(assign) => setColorSettings({ assign })}
             options={[
               { value: 'cycle', label: 'Cycle', title: 'One ramp per object, in placement order' },
               { value: 'byType', label: 'By type', title: 'One ramp per primitive type' },
               { value: 'byLevel', label: 'By level', title: 'One ramp per level' },
             ]}
           />
-          <NumberField label="Ramp size" value={document.colorSettings?.rampSize ?? Math.max(1, document.palette.colors.length - 2)} step={1} min={1} max={Math.max(1, document.palette.colors.length)} onChange={(rampSize) => props.onColorSettings({ enabled: document.colorSettings?.enabled ?? true, assign: document.colorSettings?.assign ?? 'cycle', rampSize })} />
+          <NumberField label="Ramp size" value={document.colorSettings?.rampSize ?? Math.max(1, document.palette.colors.length - 2)} step={1} min={1} max={Math.max(1, document.palette.colors.length)} onChange={(rampSize) => setColorSettings({ rampSize })} />
+          <div className="grid-2">
+            <label className="field">
+              <span className="field-label">Outline</span>
+              <input type="color" value={document.colorSettings?.outlineColor ?? sharedShadow(document.palette)} onChange={(event) => setColorSettings({ outlineColor: event.target.value })} />
+            </label>
+            <label className="field">
+              <span className="field-label">Floor</span>
+              <input type="color" value={document.colorSettings?.floorColor ?? sharedShadow(document.palette)} onChange={(event) => setColorSettings({ floorColor: event.target.value })} />
+            </label>
+          </div>
           {document.combinatorics && (
             <p className="muted small">A combinatorics set is imported, so colour is suppressed — the combinatorics surface map takes precedence.</p>
           )}

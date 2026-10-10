@@ -115,8 +115,6 @@ export interface SceneDocument {
   combinatorics?: CombinatoricsSet;
   /** Feature 7 — imported rampart palette. Absent = greyscale only. */
   palette?: Palette;
-  /** Feature 7 — per-object palette assignment override; else derived. */
-  colorMap?: Record<string, number>;
   /** Feature 7 — colour enablement and mapping. */
   colorSettings?: ColorSettings;
 }

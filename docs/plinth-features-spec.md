@@ -969,8 +969,6 @@ export interface Palette {
 export interface SceneDocument {
   // …
   palette?: Palette;
-  /** Per-object palette assignment override; else derived. */
-  colorMap?: Record<string, number>; // objectId → ramp index
   colorSettings?: {
     enabled: boolean;
     /** How to choose a ramp per object. */
@@ -1032,7 +1030,9 @@ rampart's dark→light ordering:
 
 ### 7(d) Data model / type changes
 
-- `SceneDocument.palette?`, `colorMap?`, `colorSettings?` (above).
+- `SceneDocument.palette?`, `colorSettings?` (above). (`colorMap` was declared but
+  never read or written; it was removed rather than wired, since per-object
+  overrides are out of scope for this feature.)
 - `ComposeExtras` extended or a new `ComposeColorOptions` type.
 - `RenderOptions.shading` unchanged; add a top-level `color?: boolean` in the *export*
   options (not in `RenderOptions`, to avoid persisting UI-only state — though the repo does
