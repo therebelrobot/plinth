@@ -87,6 +87,7 @@ export async function importTilesetBytes(
 
   const sprites: TilesetSpriteSet = new Map();
   let missing = 0;
+  let mismatched = 0;
   for (const face of manifest.faces) {
     const configs = new Map<string, TilesetSpriteImage>();
     for (const [id, sprite] of Object.entries(face.sprites)) {
@@ -94,6 +95,12 @@ export async function importTilesetBytes(
       if (!data) { missing++; continue; }
       try {
         const decoded = await decodePng(data);
+        // §10(b)(3): the decoded PNG must match the manifest's declared size.
+        // A wrong-size sprite is skipped (grey fallback), like a missing file.
+        if (decoded.width !== sprite.width || decoded.height !== sprite.height) {
+          mismatched++;
+          continue;
+        }
         configs.set(id, { width: decoded.width, height: decoded.height, data: decoded.data });
       } catch {
         missing++;
@@ -102,6 +109,7 @@ export async function importTilesetBytes(
     sprites.set(face.slug, configs);
   }
   if (missing > 0) warn(`tileset: ${missing} sprite file(s) missing or unreadable — grey fallback used`);
+  if (mismatched > 0) warn(`tileset: ${mismatched} sprite(s) skipped — PNG size does not match the manifest`);
   return { ref: { id: `tileset-${makeObjectId()}`, manifest }, sprites };
 }
 
