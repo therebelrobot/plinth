@@ -1,6 +1,6 @@
 {
   "name": "plinth",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Self-hosted isometric scene blocking for pixel art — compose primitives, export pixel-exact templates for Procreate.",
   "license": "Unlicense",
