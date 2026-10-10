@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import type { CombinatoricsScheme } from '../core/combinatorics';
+import { parseCombinatorics, type CombinatoricsScheme } from '../core/combinatorics';
 import { composeImage } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
 import { sceneProjection } from '../core/projection';
 import { renderPrimitive } from '../core/render';
-import type { PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
+import type { CombinatoricsSet, PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
 import {
   canShareFiles, deliverFile, exportCombinatoricsJson, exportPrimitiveKit, exportPrimitivePng, exportSceneJson, exportScenePng, exportScenePsd, rgbaToCanvas,
 } from '../lib/exporters';
@@ -231,6 +231,7 @@ export function ExportPanel(props: {
   document: SceneDocument;
   options: RenderOptions;
   onImport: (document: SceneDocument) => void;
+  onCombinatorics: (set: CombinatoricsSet | undefined) => void;
   notify: (message: string) => void;
 }) {
   const { document, options, notify } = props;
@@ -348,6 +349,36 @@ export function ExportPanel(props: {
       />
       <p className="muted small">Center, edge (straight) and corner classes for every primitive in the scene. <strong>edge</strong> means a straight run (two opposite connections).</p>
       {exportButton({ label: 'Combinatorics (JSON)', make: () => exportCombinatoricsJson(document, { scheme }) })}
+
+      <p className="muted small">Import a <code>plinth.combinatorics</code> file to drive each primitive's open faces from the scene's adjacency. Without one, rendering uses geometry and <strong>Merge flush faces</strong> alone.</p>
+      <div className="button-row">
+        <label className="button">
+          <Icon name="folder" size={16} /> Import combinatorics
+          <input type="file" accept="application/json,.json" hidden onChange={async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (!file) return;
+            try {
+              const parsed = parseCombinatorics(await file.text());
+              props.onCombinatorics(parsed);
+              notify(`Imported combinatorics (${parsed.scheme}, ${parsed.primitives.length} primitives)`);
+            } catch (error) {
+              notify(`Import failed: ${(error as Error).message}`);
+            }
+          }} />
+        </label>
+        {document.combinatorics && (
+          <button type="button" className="button danger" onClick={() => { props.onCombinatorics(undefined); notify('Cleared combinatorics'); }}>
+            <Icon name="trash" size={16} /> Clear
+          </button>
+        )}
+      </div>
+      {document.combinatorics && (
+        <p className="muted small">
+          Active set: <strong>{document.combinatorics.scheme}</strong> · {document.combinatorics.primitives.length} primitive{ document.combinatorics.primitives.length === 1 ? '' : 's' }
+          {document.combinatorics.source?.exportedAt ? ` · exported ${document.combinatorics.source.exportedAt}` : ''}
+        </p>
+      )}
 
       <h3>Scene file</h3>
       <div className="button-row">

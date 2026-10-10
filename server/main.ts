@@ -85,14 +85,29 @@ function acceptsHtml(request: IncomingMessage): boolean {
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Optional `SceneDocument.combinatorics` boundary check (Feature 3). Kept inline
+ * so the server stays zero-dependency and does not import the client core. When
+ * absent the field is ignored; when present the header must be a known v1 shape.
+ */
+function validCombinatorics(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.format === 'plinth.combinatorics' &&
+    candidate.version === 1 &&
+    (candidate.scheme === 'iso-4' || candidate.scheme === 'iso-8') &&
+    Array.isArray(candidate.primitives);
+}
+
 /** Shape check only — the client owns the schema; the server just refuses obvious garbage. */
-function validDocument(value: unknown): value is { name: string; version: 1; objects: unknown[]; settings: object } {
+export function validDocument(value: unknown): value is { name: string; version: 1; objects: unknown[]; settings: object; combinatorics?: unknown } {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
   return candidate.version === 1 &&
     typeof candidate.name === 'string' && candidate.name.length <= 200 &&
     Array.isArray(candidate.objects) && candidate.objects.length <= 20000 &&
-    !!candidate.settings && typeof candidate.settings === 'object';
+    !!candidate.settings && typeof candidate.settings === 'object' &&
+    (candidate.combinatorics === undefined || validCombinatorics(candidate.combinatorics));
 }
 
 function documentFrom(body: unknown) {

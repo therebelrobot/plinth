@@ -96,8 +96,8 @@ export function Viewport(props: Props) {
 
   // ── Render ────────────────────────────────────────────────────────────────
   const buffers = useMemo<RenderBuffers>(
-    () => renderScene(document.settings, document.objects, renderOptions),
-    [document.settings, document.objects, renderOptions],
+    () => renderScene(document.settings, document.objects, renderOptions, document.combinatorics),
+    [document.settings, document.objects, renderOptions, document.combinatorics],
   );
   const buffersRef = useRef(buffers);
   buffersRef.current = buffers;

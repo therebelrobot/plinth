@@ -4,10 +4,11 @@
 // Every output pixel is exactly one sample at the pixel centre — no
 // antialiasing — so edges come out as the clean 2:1 staircases pixel art wants.
 
+import { analyseAdjacency, pairStride } from './combinatorics';
 import { intersectCanonical, makeHit, prepareShape, type CanonicalShape } from './geometry';
 import { parameterOf } from './primitives';
 import { makeProjection, sceneProjection, type Projection } from './projection';
-import type { RenderOptions, SceneObject, SceneSettings } from './types';
+import type { CombinatoricsSet, RenderOptions, SceneObject, SceneSettings } from './types';
 
 export const OWNER_NONE = -1;
 export const OWNER_FLOOR = -2;
@@ -30,6 +31,12 @@ export interface RenderBuffers {
   grid: Uint8Array;
   /** The objects that were considered, in index order (cutaway-hidden ones included but never drawn). */
   objects: SceneObject[];
+  /**
+   * Adjacency pairs (`a * stride + b`, both orders) that are "open" against each
+   * other because an imported combinatorics set says so. `null` when nothing is
+   * imported — the edge pass then falls back to `mergeCoplanarFaces` alone.
+   */
+  joinPairs: Set<number> | null;
 }
 
 interface PreparedObject {
@@ -84,6 +91,7 @@ function allocate(projection: Projection, objects: SceneObject[]): RenderBuffers
     outline: new Uint8Array(size),
     grid: new Uint8Array(size),
     objects,
+    joinPairs: null,
   };
 }
 
@@ -172,9 +180,22 @@ function isVisible(object: SceneObject, options: RenderOptions): boolean {
   return object.z < options.hideAboveLevel + 1 - 1e-6;
 }
 
-/** Render the full scene to buffers. */
-export function renderScene(settings: SceneSettings, objects: SceneObject[], options: RenderOptions): RenderBuffers {
+/**
+ * Render the full scene to buffers. When an imported `combinatorics` set is
+ * present, each placed object's in-plane neighbour mask is derived from the
+ * scene and its open faces suppress the interior seams between connected pieces.
+ * With no set, behaviour is exactly the legacy geometry + `mergeCoplanarFaces`.
+ */
+export function renderScene(
+  settings: SceneSettings,
+  objects: SceneObject[],
+  options: RenderOptions,
+  combinatorics?: CombinatoricsSet,
+): RenderBuffers {
   const buffers = allocate(sceneProjection(settings), objects);
+  // Derive adjacency once, only when a set is imported: `joinPairs` is a Set of
+  // `a * stride + b` keys (both orders) that the edge pass consults.
+  buffers.joinPairs = combinatorics ? analyseAdjacency(objects).pairs : null;
   if (options.showFloor) rasterise(buffers, prepare(floorObject(settings), -1), OWNER_FLOOR);
   objects.forEach((object, index) => {
     if (isVisible(object, options)) rasterise(buffers, prepare(object, index), index);
@@ -227,6 +248,12 @@ function isEdge(buffers: RenderBuffers, first: number, second: number, options: 
   if (ownerFirst === OWNER_NONE && ownerSecond === OWNER_NONE) return false;
   if (ownerFirst === OWNER_NONE || ownerSecond === OWNER_NONE) return true;
   if (ownerFirst !== ownerSecond) {
+    // Imported combinatorics: an open face meeting its compatible neighbour draws
+    // no seam, even when the two faces are perpendicular (Feature 4's join).
+    if (buffers.joinPairs) {
+      const stride = pairStride(buffers.objects.length);
+      if (buffers.joinPairs.has(ownerFirst * stride + ownerSecond)) return false;
+    }
     return !(options.mergeCoplanarFaces && sameFlatSurface(buffers, first, second));
   }
   if (options.outlines !== 'all') return false;

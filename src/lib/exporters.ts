@@ -70,14 +70,14 @@ export function canShareFiles(): boolean {
 }
 
 export async function exportScenePng(document: SceneDocument, options: RenderOptions, scale: number): Promise<{ blob: Blob; filename: string }> {
-  const buffers = renderScene(document.settings, document.objects, options);
+  const buffers = renderScene(document.settings, document.objects, options, document.combinatorics);
   const rgba = composeImage(buffers, options, document.settings);
   const blob = await rgbaToPng(rgba, buffers.width, buffers.height, scale);
   return { blob, filename: `${slug(document.name)}${scale > 1 ? `@${scale}x` : ''}.png` };
 }
 
 export function exportScenePsd(document: SceneDocument, options: RenderOptions, scale: number): { blob: Blob; filename: string } {
-  const buffers = renderScene(document.settings, document.objects, options);
+  const buffers = renderScene(document.settings, document.objects, options, document.combinatorics);
   const layers = composeLayers(buffers, options, document.settings).map((layer) => ({
     ...layer,
     rgba: upscale(layer.rgba, buffers.width, buffers.height, scale),

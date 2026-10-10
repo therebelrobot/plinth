@@ -15,7 +15,7 @@
 // Pure TypeScript, no DOM: the same code runs in the browser and in node tests.
 
 import { DIRECTIONAL_TYPES } from './primitives';
-import type { PrimitiveType, SceneDocument } from './types';
+import type { CombinatoricsSet, PrimitiveType, SceneDocument, SceneObject } from './types';
 
 export type CombinatoricsScheme = 'iso-4' | 'iso-8';
 
@@ -219,4 +219,237 @@ export function buildCombinatorics(document: SceneDocument, options: Combinatori
     },
     primitives,
   };
+}
+
+// ── Import / validation ───────────────────────────────────────────────────────
+
+const PRIMITIVE_TYPES: ReadonlySet<string> = new Set([
+  'block', 'wall', 'stairs', 'ramp', 'cylinder', 'sphere', 'cone', 'pyramid', 'arch',
+]);
+
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** Shape-check one `primitives[]` entry. Returns `null` for an unknown type (ignored, not thrown). */
+function validatePrimitiveEntry(entry: unknown, index: number): PrimitiveCombinatorics | null {
+  if (!entry || typeof entry !== 'object') throw new Error(`invalid combinatorics primitive at index ${index}`);
+  const candidate = entry as Record<string, unknown>;
+  if (typeof candidate.type !== 'string') throw new Error(`invalid combinatorics primitive at index ${index}: missing type`);
+  if (!PRIMITIVE_TYPES.has(candidate.type)) return null; // unknown primitive type: ignore it
+  const template = candidate.template as Record<string, unknown> | undefined;
+  if (!template || typeof template !== 'object' ||
+    !isNumber(template.width) || !isNumber(template.depth) || !isNumber(template.height)) {
+    throw new Error(`invalid combinatorics primitive at index ${index}: bad template`);
+  }
+  if (!Array.isArray(candidate.combinations)) {
+    throw new Error(`invalid combinatorics primitive at index ${index}: missing combinations[]`);
+  }
+  for (const combination of candidate.combinations) {
+    if (!combination || typeof combination !== 'object') throw new Error(`invalid combination in ${candidate.type}`);
+    const combo = combination as Record<string, unknown>;
+    if (typeof combo.id !== 'string' || !isNumber(combo.mask) || !Array.isArray(combo.rotations)) {
+      throw new Error(`invalid combination in ${candidate.type}`);
+    }
+    for (const rotation of combo.rotations) {
+      if (!rotation || typeof rotation !== 'object' ||
+        !isNumber((rotation as Record<string, unknown>).rotation) ||
+        !isNumber((rotation as Record<string, unknown>).mask)) {
+        throw new Error(`invalid rotation in ${candidate.type}`);
+      }
+    }
+  }
+  return candidate as unknown as PrimitiveCombinatorics;
+}
+
+/**
+ * Validate a parsed `plinth.combinatorics` value. Rejects wrong `format`,
+ * unknown `version`, unknown `scheme`, and malformed combinations with a clear
+ * message. Unknown primitive *types* are dropped rather than thrown, so a newer
+ * exporter's extra entries do not break an older importer.
+ */
+export function validateCombinatorics(value: unknown): CombinatoricsSet {
+  if (!value || typeof value !== 'object') throw new Error('not a combinatorics file');
+  const candidate = value as Record<string, unknown>;
+  if (candidate.format !== 'plinth.combinatorics') throw new Error('not a plinth.combinatorics file');
+  if (candidate.version !== 1) throw new Error(`unsupported combinatorics version: ${String(candidate.version)}`);
+  if (candidate.scheme !== 'iso-4' && candidate.scheme !== 'iso-8') {
+    throw new Error(`unknown connectivity scheme: ${String(candidate.scheme)}`);
+  }
+  if (!Array.isArray(candidate.primitives)) throw new Error('missing primitives[]');
+  const primitives = candidate.primitives
+    .map((entry, index) => validatePrimitiveEntry(entry, index))
+    .filter((entry): entry is PrimitiveCombinatorics => entry !== null);
+  const source = typeof candidate.exportedAt === 'string'
+    ? { exportedAt: candidate.exportedAt }
+    : typeof candidate.source === 'object' && candidate.source !== null
+      ? (candidate.source as { name?: string; exportedAt?: string })
+      : undefined;
+  return {
+    format: 'plinth.combinatorics',
+    version: 1,
+    scheme: candidate.scheme,
+    ...(source ? { source } : {}),
+    primitives,
+  };
+}
+
+/** Parse and validate `plinth.combinatorics` JSON text. Throws a clear error on bad input. */
+export function parseCombinatorics(text: string): CombinatoricsSet {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error('not valid JSON');
+  }
+  return validateCombinatorics(value);
+}
+
+// ── Surfaces ─────────────────────────────────────────────────────────────────
+
+/** Which side faces of a primitive are "open" (joined to a compatible neighbour). */
+export interface FaceOpenFlags {
+  px: boolean;
+  nx: boolean;
+  py: boolean;
+  ny: boolean;
+}
+
+/** Expand a world-space neighbour mask into per-face open flags. Top/bottom never open. */
+export function openFacesFromMask(mask: number): FaceOpenFlags {
+  return {
+    px: (mask & 2) !== 0,
+    nx: (mask & 8) !== 0,
+    py: (mask & 4) !== 0,
+    ny: (mask & 1) !== 0,
+  };
+}
+
+/** The numerically smallest of the four rotations of `mask` — the class representative. */
+export function canonicalMask(mask: number): number {
+  return Math.min(rotateMask(mask, 0), rotateMask(mask, 1), rotateMask(mask, 2), rotateMask(mask, 3));
+}
+
+export interface ResolvedCombination {
+  /** The imported class for this mask, or `null` if the set has no entry for the type/mask. */
+  combination: Combination | null;
+  className: string | null;
+  open: FaceOpenFlags;
+}
+
+/**
+ * Canonicalise a world-space mask and look it up in the imported set. The open
+ * flags come from the *actual* mask (world-space), so the class lookup and the
+ * surface flags never double-count rotation.
+ */
+export function resolveCombination(set: CombinatoricsSet, type: PrimitiveType, mask: number): ResolvedCombination {
+  const representative = canonicalMask(mask);
+  const primitive = set.primitives.find((entry) => entry.type === type);
+  const combination = primitive?.combinations.find((entry) => entry.mask === representative) ?? null;
+  return { combination, className: combination?.id ?? null, open: openFacesFromMask(mask) };
+}
+
+// ── Adjacency ─────────────────────────────────────────────────────────────────
+
+const ADJACENCY_TOLERANCE = 1e-3;
+
+/** Mask bits: N (toward −y) = 1, E (+x) = 2, S (+y) = 4, W (−x) = 8. */
+const OPPOSITE: Record<number, number> = { 1: 4, 4: 1, 2: 8, 8: 2 };
+
+function near(a: number, b: number): boolean {
+  return Math.abs(a - b) < ADJACENCY_TOLERANCE;
+}
+
+/**
+ * The direction bit from `a` toward `b` when the two are compatible, face-adjacent
+ * primitives, else 0. Compatibility = same type, same vertical span (z, height),
+ * the same `parameter` (wall/arch thickness, stair count), a coincident abutting
+ * plane, and matching footprint edge length — so a thick wall never falsely
+ * connects to a thin one (spec §3(g)).
+ */
+export function abuttingDirection(a: SceneObject, b: SceneObject): number {
+  if (a.type !== b.type) return 0;
+  if (!near(a.z, b.z) || !near(a.height, b.height)) return 0;
+  if (!near(a.parameter ?? 0, b.parameter ?? 0)) return 0;
+  // E: b's low-x edge abuts a's high-x edge, full depth matching.
+  if (near(b.x, a.x + a.width) && near(a.y, b.y) && near(a.depth, b.depth)) return 2;
+  // W: a's low-x edge abuts b's high-x edge.
+  if (near(a.x, b.x + b.width) && near(a.y, b.y) && near(a.depth, b.depth)) return 8;
+  // S: b's low-y edge abuts a's high-y edge, full width matching.
+  if (near(b.y, a.y + a.depth) && near(a.x, b.x) && near(a.width, b.width)) return 4;
+  // N: a's low-y edge abuts b's high-y edge.
+  if (near(a.y, b.y + b.depth) && near(a.x, b.x) && near(a.width, b.width)) return 1;
+  return 0;
+}
+
+export interface Adjacency {
+  /** Neighbour mask per object (index-aligned to the input). */
+  masks: number[];
+  /** Pair keys `a * stride + b` for every connected pair, in both orders. */
+  pairs: Set<number>;
+}
+
+/** Pair-key stride for a scene of `size` objects; shared by adjacency and the edge pass. */
+export function pairStride(size: number): number {
+  return size + 1;
+}
+
+/**
+ * Derive each object's in-plane neighbour mask and the set of connected pairs,
+ * using a spatial hash so a 20 000-object scene stays O(n)-ish rather than O(n²).
+ */
+export function analyseAdjacency(objects: SceneObject[]): Adjacency {
+  const masks = new Array<number>(objects.length).fill(0);
+  const pairs = new Set<number>();
+  const stride = pairStride(objects.length);
+
+  // Register each object in every unit cell its footprint overlaps.
+  const grid = new Map<number, number[]>();
+  const cellKey = (cx: number, cy: number): number => cx * 65536 + cy;
+  objects.forEach((object, index) => {
+    const startX = Math.floor(object.x), endX = Math.floor(object.x + object.width - 1e-9);
+    const startY = Math.floor(object.y), endY = Math.floor(object.y + object.depth - 1e-9);
+    for (let cx = startX; cx <= endX; cx++) {
+      for (let cy = startY; cy <= endY; cy++) {
+        const key = cellKey(cx, cy);
+        const bucket = grid.get(key);
+        if (bucket) bucket.push(index);
+        else grid.set(key, [index]);
+      }
+    }
+  });
+
+  const tested = new Set<number>();
+  objects.forEach((a, ia) => {
+    // Any face-adjacent neighbour lies within one tile, so query the expanded box.
+    const lowX = Math.floor(a.x - 1 - ADJACENCY_TOLERANCE);
+    const highX = Math.floor(a.x + a.width + 1 + ADJACENCY_TOLERANCE);
+    const lowY = Math.floor(a.y - 1 - ADJACENCY_TOLERANCE);
+    const highY = Math.floor(a.y + a.depth + 1 + ADJACENCY_TOLERANCE);
+    for (let cx = lowX; cx <= highX; cx++) {
+      for (let cy = lowY; cy <= highY; cy++) {
+        const bucket = grid.get(cellKey(cx, cy));
+        if (!bucket) continue;
+        for (const ib of bucket) {
+          if (ib === ia) continue;
+          const key = ia * stride + ib;
+          if (tested.has(key)) continue;
+          tested.add(key);
+          const direction = abuttingDirection(a, objects[ib]);
+          if (direction === 0) continue;
+          masks[ia] |= direction;
+          masks[ib] |= OPPOSITE[direction];
+          pairs.add(ia * stride + ib);
+          pairs.add(ib * stride + ia);
+        }
+      }
+    }
+  });
+
+  return { masks, pairs };
+}
+
+/** Convenience wrapper: just the neighbour mask per object. */
+export function neighbourMasks(objects: SceneObject[]): number[] {
+  return analyseAdjacency(objects).masks;
 }

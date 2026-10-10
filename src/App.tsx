@@ -447,6 +447,7 @@ export function App() {
               options={viewOptions}
               notify={notify}
               onImport={(imported) => createScene({ ...imported, name: `${imported.name}` })}
+              onCombinatorics={(set) => history.commit((current) => ({ ...current, combinatorics: set }))}
             />
           )}
         </div>

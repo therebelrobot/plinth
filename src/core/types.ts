@@ -5,6 +5,11 @@
 // A 1×1×1 block is therefore a geometric cube; the pixel size of a level
 // (levelHeightPixels) only changes how that cube is projected, not its shape.
 
+// Type-only import: `PrimitiveCombinatorics` (the Feature-2 export shape) lives
+// with the rest of the combinatorics code. `import type` is erased at build, so
+// this does not create a runtime import cycle.
+import type { PrimitiveCombinatorics } from './combinatorics';
+
 export type PrimitiveType =
   | 'block'
   | 'wall'
@@ -55,11 +60,26 @@ export interface SceneSettings {
   snap: number;
 }
 
+/**
+ * An imported `plinth.combinatorics` v1 document (Feature 2 export), validated
+ * on import and attached to the scene so it persists via the whole-document save.
+ * `version` is a one-way door: importers reject unknown versions rather than guess.
+ */
+export interface CombinatoricsSet {
+  format: 'plinth.combinatorics';
+  version: 1;
+  scheme: 'iso-4' | 'iso-8';
+  source?: { name?: string; exportedAt?: string };
+  primitives: PrimitiveCombinatorics[];
+}
+
 export interface SceneDocument {
   version: 1;
   name: string;
   settings: SceneSettings;
   objects: SceneObject[];
+  /** Imported connectivity classes used to drive primitive surfaces. Absent = legacy geometry. */
+  combinatorics?: CombinatoricsSet;
 }
 
 export type ShadingMode = 'shaded' | 'height' | 'silhouette' | 'blank';
