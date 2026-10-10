@@ -97,6 +97,18 @@ function allocate(projection: Projection, objects: SceneObject[]): RenderBuffers
 
 const hit = makeHit();
 
+/**
+ * Feature 10 — screen position of an object's footprint back corner at its base
+ * elevation. Tileset sprites are anchored at this point (the ground-level back
+ * corner convention recorded in the tileset manifest, mirroring `kit.json`).
+ */
+export function objectScreenAnchor(projection: Projection, object: SceneObject): [number, number] {
+  return [
+    projection.originX + (object.x - object.y) * projection.halfTile,
+    projection.originY + (object.x + object.y) * projection.quarterTile - object.z * projection.levelHeight,
+  ];
+}
+
 /** Raycast one prepared object into the buffers over its screen bounding box. */
 function rasterise(buffers: RenderBuffers, prepared: PreparedObject, ownerValue: number): void {
   const { projection } = buffers;

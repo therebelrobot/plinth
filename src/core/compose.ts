@@ -2,7 +2,7 @@
 // composite image or separate layers (for PSD export).
 
 import { colorForBand, hexToRgb, sharedShadow } from './color';
-import { OWNER_FLOOR, OWNER_NONE, type RenderBuffers } from './render';
+import { OWNER_FLOOR, OWNER_NONE, objectScreenAnchor, type RenderBuffers } from './render';
 import type { ColorSettings, Palette, RenderOptions, SceneSettings } from './types';
 
 // Light from upper-left-front. In this projection the +y face is the visible
@@ -65,10 +65,36 @@ function backgroundGrey(options: RenderOptions): number {
   return -1;
 }
 
+/** Feature 10 — a decoded tileset sprite: RGBA pixels at the tileset's recorded scale. */
+export interface TilesetSpriteImage {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+}
+
+/**
+ * Feature 10 — how to paint one object from an imported tileset sprite. Index-aligned
+ * to `RenderBuffers.objects`; `null` means "no sprite for this object, fall back to grey".
+ */
+export interface TilesetPlacement {
+  /** The sprite image, already rotated for the object's facing. */
+  image: TilesetSpriteImage;
+  /** Sprite-image position of the footprint back corner at ground level (image pixels). */
+  anchorX: number;
+  anchorY: number;
+  /** 1× tile width / level height the sprite was authored at (for scene scaling). */
+  tileWidth: number;
+  levelHeight: number;
+  /** Manifest scale — the decoded image is this many times the 1× dimensions. */
+  scale: number;
+}
+
 export interface ComposeExtras {
   /** Editor-only: tint this object's pixels. */
   highlightOwner?: number;
   highlightColor?: readonly [number, number, number];
+  /** Feature 10 — per-object tileset sprites (index-aligned to `buffers.objects`). */
+  tileset?: (TilesetPlacement | null)[];
 }
 
 function write(rgba: Uint8ClampedArray, index: number, grey: number): void {
@@ -79,6 +105,36 @@ function write(rgba: Uint8ClampedArray, index: number, grey: number): void {
 function writeRgb(rgba: Uint8ClampedArray, index: number, rgb: readonly [number, number, number]): void {
   const offset = index * 4;
   rgba[offset] = rgb[0]; rgba[offset + 1] = rgb[1]; rgba[offset + 2] = rgb[2]; rgba[offset + 3] = 255;
+}
+
+function writeRgba(rgba: Uint8ClampedArray, index: number, rgb: readonly [number, number, number, number]): void {
+  const offset = index * 4;
+  rgba[offset] = rgb[0]; rgba[offset + 1] = rgb[1]; rgba[offset + 2] = rgb[2]; rgba[offset + 3] = rgb[3];
+}
+
+/**
+ * Feature 10 — sample an imported tileset sprite for the object that owns `index`.
+ * The sprite is anchored at the object's footprint back corner at ground level and
+ * scaled from the tileset's tile size to the scene's. Returns the sprite RGBA when
+ * the pixel is opaque, else `null` so the caller falls back to the grey tone.
+ */
+function sampleSprite(buffers: RenderBuffers, index: number, placement: TilesetPlacement): [number, number, number, number] | null {
+  const object = buffers.objects[buffers.owner[index]];
+  if (!object) return null;
+  const [anchorScreenX, anchorScreenY] = objectScreenAnchor(buffers.projection, object);
+  const pixelX = index % buffers.width;
+  const pixelY = (index - pixelX) / buffers.width;
+  const sceneTileWidth = buffers.projection.halfTile * 2;
+  const ratio = placement.tileWidth > 0 ? sceneTileWidth / placement.tileWidth : 1;
+  const scale = placement.scale > 0 ? placement.scale : 1;
+  const spriteX = Math.floor(placement.anchorX + ((pixelX + 0.5 - anchorScreenX) * scale) / ratio);
+  const spriteY = Math.floor(placement.anchorY + ((pixelY + 0.5 - anchorScreenY) * scale) / ratio);
+  const { image } = placement;
+  if (spriteX < 0 || spriteY < 0 || spriteX >= image.width || spriteY >= image.height) return null;
+  const offset = (spriteY * image.width + spriteX) * 4;
+  const alpha = image.data[offset + 3];
+  if (alpha === 0) return null;
+  return [image.data[offset], image.data[offset + 1], image.data[offset + 2], alpha];
 }
 
 /**
@@ -121,6 +177,7 @@ export function composeColorImage(
   _settings: Pick<SceneSettings, 'levelCount'>,
   palette: Palette,
   colorSettings: ColorSettings,
+  tileset?: (TilesetPlacement | null)[],
 ): Uint8ClampedArray {
   const { width, height } = buffers;
   const rgba = new Uint8ClampedArray(width * height * 4);
@@ -128,7 +185,14 @@ export function composeColorImage(
   const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette));
   const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette));
   for (let index = 0; index < width * height; index++) {
-    const rgb = colorAt(buffers, index, options, palette, colorSettings, outlineRgb, floorRgb);
+    // Feature 10 precedence: tileset > rampart colour. An opaque sprite pixel
+    // replaces the palette colour; a transparent pixel keeps the colour.
+    const owner = buffers.owner[index];
+    const placement = tileset && owner >= 0 ? tileset[owner] ?? null : null;
+    const sprite = placement ? sampleSprite(buffers, index, placement) : null;
+    const rgb = sprite
+      ? ([sprite[0], sprite[1], sprite[2]] as [number, number, number])
+      : colorAt(buffers, index, options, palette, colorSettings, outlineRgb, floorRgb);
     if (!rgb) {
       if (background >= 0) write(rgba, index, background);
       continue;
@@ -149,15 +213,26 @@ export function composeImage(
   const rgba = new Uint8ClampedArray(width * height * 4);
   const background = backgroundGrey(options);
   for (let index = 0; index < width * height; index++) {
+    const owner = buffers.owner[index];
     let grey = toneAt(buffers, index, options, settings);
     if (grey >= 0 && buffers.grid[index]) grey = Math.max(0, grey - GRID_DARKEN);
-    if (buffers.outline[index] && buffers.owner[index] !== OWNER_NONE) grey = OUTLINE_GREY;
-    if (grey < 0) {
+    if (buffers.outline[index] && owner !== OWNER_NONE) grey = OUTLINE_GREY;
+
+    // Feature 10 precedence: tileset > grey. An opaque sprite pixel replaces the
+    // grey tone; a transparent (or absent) sprite pixel falls back to grey.
+    const placement = owner >= 0 && extras.tileset ? extras.tileset[owner] ?? null : null;
+    const sprite = placement ? sampleSprite(buffers, index, placement) : null;
+
+    if (sprite) {
+      writeRgba(rgba, index, sprite);
+    } else if (grey < 0) {
       if (background >= 0) write(rgba, index, background);
       continue;
+    } else {
+      write(rgba, index, grey);
     }
-    write(rgba, index, grey);
-    if (extras.highlightOwner !== undefined && buffers.owner[index] === extras.highlightOwner && extras.highlightColor) {
+
+    if (extras.highlightOwner !== undefined && owner === extras.highlightOwner && extras.highlightColor) {
       const offset = index * 4;
       const [red, green, blue] = extras.highlightColor;
       rgba[offset] = (rgba[offset] * 0.45 + red * 0.55) | 0;
@@ -186,6 +261,7 @@ export function composeLayers(
   settings: Pick<SceneSettings, 'levelCount'>,
   palette?: Palette,
   colorSettings?: ColorSettings,
+  tileset?: (TilesetPlacement | null)[],
 ): ImageLayer[] {
   const { width, height } = buffers;
   const size = width * height;
@@ -206,7 +282,14 @@ export function composeLayers(
     const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette));
     let hasBase = false;
     for (let index = 0; index < size; index++) {
-      const rgb = colorAt(buffers, index, options, palette, colorSettings, outlineRgb, floorRgb);
+      // Feature 10 precedence: an opaque tileset sprite pixel wins over the palette
+      // colour in the base layer; a transparent pixel keeps the colour.
+      const owner = buffers.owner[index];
+      const placement = tileset && owner >= 0 ? tileset[owner] ?? null : null;
+      const sprite = placement ? sampleSprite(buffers, index, placement) : null;
+      const rgb = sprite
+        ? ([sprite[0], sprite[1], sprite[2]] as [number, number, number])
+        : colorAt(buffers, index, options, palette, colorSettings, outlineRgb, floorRgb);
       if (rgb) { writeRgb(base, index, rgb); hasBase = true; }
     }
     if (hasBase) layers.push({ name: 'Base color', rgba: base });

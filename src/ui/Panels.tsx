@@ -1,16 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { parseRampartPalette, sharedShadow } from '../core/color';
 import { parseCombinatorics, type CombinatoricsScheme } from '../core/combinatorics';
-import { composeImage } from '../core/compose';
+import { composeImage, type TilesetPlacement } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
 import { sceneProjection } from '../core/projection';
 import { renderPrimitive } from '../core/render';
-import { TILESET_CONFIG_COUNT, faceKey } from '../core/tileset';
-import type { ColorSettings, CombinatoricsSet, Palette, PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings } from '../core/types';
+import { TILESET_CONFIG_COUNT, buildTilesetPlacements, faceKey, type TilesetSpriteSet } from '../core/tileset';
+import type { ColorSettings, CombinatoricsSet, Palette, PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject, SceneSettings, TilesetRef } from '../core/types';
 import {
   canShareFiles, deliverFile, exportCombinatoricsJson, exportPrimitiveKit, exportPrimitivePng, exportSceneJson, exportScenePng, exportScenePsd, rgbaToCanvas,
 } from '../lib/exporters';
-import { exportTileset } from '../lib/tileset';
+import { deleteTilesetSprites, exportTileset, importTileset, loadTilesetSprites, saveTilesetSprites } from '../lib/tileset';
 import { Icon } from './Icon';
 import { NumberField, Segmented, Toggle } from './Fields';
 
@@ -254,6 +254,7 @@ export function ExportPanel(props: {
   onCombinatorics: (set: CombinatoricsSet | undefined) => void;
   onPalette: (palette: Palette | undefined) => void;
   onColorSettings: (settings: ColorSettings | undefined) => void;
+  onTileset: (ref: TilesetRef | undefined) => void;
   notify: (message: string) => void;
 }) {
   const { document, options, notify } = props;
@@ -263,6 +264,26 @@ export function ExportPanel(props: {
   const [busy, setBusy] = useState<string | null>(null);
   const shareable = useMemo(() => canShareFiles(), []);
   const faceCount = useMemo(() => new Set(document.objects.map(faceKey)).size, [document.objects]);
+
+  // Feature 10 — decoded tileset sprites (IndexedDB) → per-object render placements,
+  // so PNG/PSD exports composite the art with the same precedence as the viewport.
+  const [tilesetSprites, setTilesetSprites] = useState<TilesetSpriteSet | null>(null);
+  useEffect(() => {
+    const ref = document.tileset;
+    if (!ref) { setTilesetSprites(null); return; }
+    let cancelled = false;
+    loadTilesetSprites(ref.id)
+      .then((sprites) => { if (!cancelled) setTilesetSprites(sprites); })
+      .catch(() => { if (!cancelled) setTilesetSprites(null); });
+    return () => { cancelled = true; };
+  }, [document.tileset]);
+  const tilesetPlacements = useMemo<(TilesetPlacement | null)[] | undefined>(() => {
+    if (!document.tileset || !tilesetSprites) return undefined;
+    return buildTilesetPlacements(document.objects, document.tileset.manifest, tilesetSprites);
+  }, [document.tileset, document.objects, tilesetSprites]);
+  const tilesetSpriteCount = document.tileset
+    ? document.tileset.manifest.faces.reduce((total, face) => total + Object.keys(face.sprites).length, 0)
+    : 0;
   const [presetKey, setPresetKey] = useState(PRIMITIVE_PRESETS[0].key);
   const preset = PRIMITIVE_PRESETS.find((candidate) => candidate.key === presetKey)!;
   const [size, setSize] = useState({ width: preset.width, depth: preset.depth, height: preset.height });
@@ -330,8 +351,8 @@ export function ExportPanel(props: {
           ]}
         />
       )}
-      {exportButton({ label: 'PNG', make: () => exportScenePng(document, exportOptions, scale, pngColor) })}
-      {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale) })}
+      {exportButton({ label: 'PNG', make: () => exportScenePng(document, exportOptions, scale, pngColor, tilesetPlacements) })}
+      {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale, tilesetPlacements) })}
       <p className="muted small">The PSD has floor, grid, one layer per level and lines as separate layers. Procreate opens it with layers intact. Cutaway is ignored on export.</p>
 
       <h3>Primitive in isolation</h3>
@@ -425,6 +446,43 @@ export function ExportPanel(props: {
       <h3>Tileset (image combinatorics)</h3>
       <p className="muted small">Discrete block-image templates for drawing over in Procreate: <strong>47</strong> open-corner configurations per face (a grey isometric block with its open edges un-outlined), plus a manifest, packaged as a zip. Faces: <strong>{faceCount}</strong> · configs: <strong>{TILESET_CONFIG_COUNT}</strong>.</p>
       {exportButton({ label: 'Tileset (.zip)', make: () => exportTileset(document, exportOptions, scale) })}
+      <p className="muted small">Draw the art over the templates in Procreate, then re-import the zip. Sprites replace the grey textures on each tile; transparent pixels keep grey. Precedence: <strong>{'tileset > rampart colour > grey'}</strong>.</p>
+      <div className="button-row">
+        <label className="button">
+          <Icon name="folder" size={16} /> Import tileset
+          <input type="file" accept="application/zip,.zip" hidden onChange={async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (!file) return;
+            try {
+              const warnings: string[] = [];
+              const imported = await importTileset(file, undefined, (message) => warnings.push(message));
+              await saveTilesetSprites(imported.ref.id, imported.sprites);
+              props.onTileset(imported.ref);
+              const configs = [...imported.sprites.values()].reduce((total, map) => total + map.size, 0);
+              notify(`Imported tileset (${imported.ref.manifest.faces.length} faces, ${configs} sprites)${warnings.length ? ` — ${warnings.join('; ')}` : ''}`);
+            } catch (error) {
+              notify(`Import failed: ${(error as Error).message}`);
+            }
+          }} />
+        </label>
+        {document.tileset && (
+          <button type="button" className="button danger" onClick={async () => {
+            const id = document.tileset?.id;
+            props.onTileset(undefined);
+            if (id) await deleteTilesetSprites(id);
+            notify('Cleared tileset');
+          }}>
+            <Icon name="trash" size={16} /> Clear
+          </button>
+        )}
+      </div>
+      {document.tileset && (
+        <p className="muted small">
+          Active tileset: <strong>{document.tileset.manifest.faces.length}</strong> face{document.tileset.manifest.faces.length === 1 ? '' : 's'} · {tilesetSpriteCount} sprites · {document.tileset.manifest.projection.tileWidthPixels}px tiles
+          {document.tileset.manifest.exportedAt ? ` · exported ${document.tileset.manifest.exportedAt}` : ''}
+        </p>
+      )}
 
       <h3>Colour (rampart)</h3>
       <p className="muted small">Import a rampart palette export to add a real <strong>Base color</strong> layer under the greyscale trace layers. Colour applies only when no combinatorics set is imported.</p>

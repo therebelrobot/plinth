@@ -2,7 +2,7 @@
 
 import { colorActive } from '../core/color';
 import { buildCombinatorics, type CombinatoricsOptions } from '../core/combinatorics';
-import { composeColorImage, composeImage, composeLayers, upscale } from '../core/compose';
+import { composeColorImage, composeImage, composeLayers, upscale, type TilesetPlacement } from '../core/compose';
 import { PRIMITIVE_PRESETS, DIRECTIONAL_TYPES } from '../core/primitives';
 import { encodePsd } from '../core/psd';
 import { renderPrimitive, renderScene } from '../core/render';
@@ -70,19 +70,19 @@ export function canShareFiles(): boolean {
   }
 }
 
-export async function exportScenePng(document: SceneDocument, options: RenderOptions, scale: number, color = false): Promise<{ blob: Blob; filename: string }> {
+export async function exportScenePng(document: SceneDocument, options: RenderOptions, scale: number, color = false, tileset?: (TilesetPlacement | null)[]): Promise<{ blob: Blob; filename: string }> {
   const buffers = renderScene(document.settings, document.objects, options, document.combinatorics);
   const rgba = color && colorActive(document)
-    ? composeColorImage(buffers, options, document.settings, document.palette!, document.colorSettings!)
-    : composeImage(buffers, options, document.settings);
+    ? composeColorImage(buffers, options, document.settings, document.palette!, document.colorSettings!, tileset)
+    : composeImage(buffers, options, document.settings, { tileset });
   const blob = await rgbaToPng(rgba, buffers.width, buffers.height, scale);
   return { blob, filename: `${slug(document.name)}${scale > 1 ? `@${scale}x` : ''}.png` };
 }
 
-export function exportScenePsd(document: SceneDocument, options: RenderOptions, scale: number): { blob: Blob; filename: string } {
+export function exportScenePsd(document: SceneDocument, options: RenderOptions, scale: number, tileset?: (TilesetPlacement | null)[]): { blob: Blob; filename: string } {
   const buffers = renderScene(document.settings, document.objects, options, document.combinatorics);
   const palette = colorActive(document) ? document.palette : undefined;
-  const layers = composeLayers(buffers, options, document.settings, palette, document.colorSettings).map((layer) => ({
+  const layers = composeLayers(buffers, options, document.settings, palette, document.colorSettings, tileset).map((layer) => ({
     ...layer,
     rgba: upscale(layer.rgba, buffers.width, buffers.height, scale),
   }));

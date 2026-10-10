@@ -9,6 +9,7 @@
 // with the rest of the combinatorics code. `import type` is erased at build, so
 // this does not create a runtime import cycle.
 import type { PrimitiveCombinatorics } from './combinatorics';
+import type { TilesetManifest } from './tileset';
 
 export type PrimitiveType =
   | 'block'
@@ -106,6 +107,19 @@ export interface ColorSettings {
   floorColor?: string;
 }
 
+/**
+ * Feature 10 — an imported image tileset. The decoded sprites are large and live
+ * in IndexedDB keyed by `id`; only this small reference (with the manifest) is
+ * persisted with the document. Trade-off: the tileset does not sync across
+ * devices — re-import on another device. Images are never sent to the server.
+ */
+export interface TilesetRef {
+  /** IndexedDB key where the decoded sprites live. */
+  id: string;
+  /** The validated manifest (config table + face/sprite references). */
+  manifest: TilesetManifest;
+}
+
 export interface SceneDocument {
   version: 1;
   name: string;
@@ -117,6 +131,8 @@ export interface SceneDocument {
   palette?: Palette;
   /** Feature 7 — colour enablement and mapping. */
   colorSettings?: ColorSettings;
+  /** Feature 10 — imported image tileset. Absent = grey textures only. */
+  tileset?: TilesetRef;
 }
 
 export type ShadingMode = 'shaded' | 'height' | 'silhouette' | 'blank';

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
-import { composeImage } from '../core/compose';
+import { composeImage, type TilesetPlacement } from '../core/compose';
+import { buildTilesetPlacements, type TilesetSpriteSet } from '../core/tileset';
 import {
   isOccupiedBySame, objectAt, placementTarget, targetOnPlane, clampTarget,
   type PlacementSize, type PlacementSurface, type PlacementTarget,
@@ -8,6 +9,7 @@ import { DIRECTIONAL_TYPES, type PrimitivePreset } from '../core/primitives';
 import { projectPoint, unprojectToPlane, type Projection } from '../core/projection';
 import { renderScene, type RenderBuffers } from '../core/render';
 import { makeObjectId, type RenderOptions, type Rotation, type SceneObject } from '../core/types';
+import { loadTilesetSprites } from '../lib/tileset';
 import type { History } from '../state/history';
 
 export type Tool = 'select' | 'place' | 'erase' | 'pan';
@@ -102,6 +104,25 @@ export function Viewport(props: Props) {
   const buffersRef = useRef(buffers);
   buffersRef.current = buffers;
 
+  // ── Tileset sprites (Feature 10) ──────────────────────────────────────────
+  // The decoded sprites live in IndexedDB keyed by the document's TilesetRef.id;
+  // load them once per reference, then resolve every object's sprite placement.
+  const [tilesetSprites, setTilesetSprites] = useState<TilesetSpriteSet | null>(null);
+  useEffect(() => {
+    const ref = document.tileset;
+    if (!ref) { setTilesetSprites(null); return; }
+    let cancelled = false;
+    loadTilesetSprites(ref.id)
+      .then((sprites) => { if (!cancelled) setTilesetSprites(sprites); })
+      .catch(() => { if (!cancelled) setTilesetSprites(null); });
+    return () => { cancelled = true; };
+  }, [document.tileset]);
+
+  const tilesetPlacements = useMemo<(TilesetPlacement | null)[] | undefined>(() => {
+    if (!document.tileset || !tilesetSprites) return undefined;
+    return buildTilesetPlacements(document.objects, document.tileset.manifest, tilesetSprites);
+  }, [document.tileset, document.objects, tilesetSprites]);
+
   const selectedIndex = useMemo(() => document.objects.findIndex((object) => object.id === selectionId), [document.objects, selectionId]);
 
   useEffect(() => {
@@ -112,9 +133,10 @@ export function Viewport(props: Props) {
     const rgba = composeImage(buffers, renderOptions, document.settings, {
       highlightOwner: selectedIndex >= 0 ? selectedIndex : undefined,
       highlightColor: ACCENT_RGB,
+      tileset: tilesetPlacements,
     });
     canvas.getContext('2d')!.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, buffers.width, buffers.height), 0, 0);
-  }, [buffers, renderOptions, document.settings, selectedIndex]);
+  }, [buffers, renderOptions, document.settings, selectedIndex, tilesetPlacements]);
 
   // ── View helpers ──────────────────────────────────────────────────────────
   const fit = useCallback(() => {

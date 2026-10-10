@@ -12,6 +12,7 @@
 
 import { analyseAdjacency, pairStride, rotateMask8 } from './combinatorics';
 import { composeImage, upscale } from './compose';
+import type { TilesetPlacement, TilesetSpriteImage } from './compose';
 import { DIRECTIONAL_TYPES } from './primitives';
 import { renderPrimitive, type RenderBuffers } from './render';
 import type { PrimitiveType, RenderOptions, Rotation, SceneDocument, SceneObject } from './types';
@@ -389,6 +390,98 @@ export function parseTilesetManifest(text: string, warn?: TilesetWarning): Tiles
     throw new Error('not valid JSON');
   }
   return validateTilesetManifest(value, warn);
+}
+
+// ── Import: resolve each object's sprite ──────────────────────────────────────
+
+/** Decoded sprites per face slug → per config id. */
+export type TilesetSpriteSet = Map<string, Map<string, TilesetSpriteImage>>;
+
+/** Template key, matching the exporter's `faceKey` (rotation-independent). */
+export function templateKey(template: {
+  type: string; width: number; depth: number; height: number;
+  parameter?: number; slope?: number; slopeDirection?: 1 | -1;
+}): string {
+  return [template.type, template.width, template.depth, template.height,
+  template.parameter ?? '', template.slope ?? 0, template.slopeDirection ?? 1].join('|');
+}
+
+function rotateQuarterClockwise(image: TilesetSpriteImage): TilesetSpriteImage {
+  const { width, height, data } = image;
+  const outWidth = height;
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const target = (x * outWidth + (height - 1 - y)) * 4;
+      const source = (y * width + x) * 4;
+      out[target] = data[source];
+      out[target + 1] = data[source + 1];
+      out[target + 2] = data[source + 2];
+      out[target + 3] = data[source + 3];
+    }
+  }
+  return { width: outWidth, height: width, data: out };
+}
+
+const rotationCache = new WeakMap<TilesetSpriteImage, TilesetSpriteImage[]>();
+
+/** The sprite rotated `turns` quarter-turns clockwise (the exporter emits rotation 0). */
+function rotateSprite(image: TilesetSpriteImage, turns: number): TilesetSpriteImage {
+  const r = ((turns % 4) + 4) % 4;
+  if (r === 0) return image;
+  let variants = rotationCache.get(image);
+  if (!variants) { variants = [image]; rotationCache.set(image, variants); }
+  while (variants.length <= r) variants.push(rotateQuarterClockwise(variants[variants.length - 1]));
+  return variants[r];
+}
+
+/** Rotate the sprite anchor with the same clockwise mapping (and track the new dims). */
+function rotateAnchor(x: number, y: number, width: number, height: number, turns: number): [number, number] {
+  let ax = x, ay = y, w = width, h = height;
+  for (let i = 0; i < turns; i++) {
+    const nextX = h - ay;
+    ay = ax;
+    ax = nextX;
+    const nextW = h;
+    h = w;
+    w = nextW;
+  }
+  return [ax, ay];
+}
+
+/**
+ * Feature 10 — resolve each object's tileset sprite. For every object it finds the
+ * matching face by template key, derives the object's 8-neighbour mask, normalizes it
+ * with the open-corner rule, looks up that config's sprite, and rotates the sprite for
+ * the object's facing (the exporter emits rotation 0). The result is index-aligned to
+ * `objects`; `null` means "no sprite — fall back to grey".
+ */
+export function buildTilesetPlacements(
+  objects: SceneObject[],
+  manifest: TilesetManifest,
+  sprites: TilesetSpriteSet,
+): (TilesetPlacement | null)[] {
+  if (objects.length === 0 || manifest.faces.length === 0) return objects.map(() => null);
+  const facesByKey = new Map<string, TilesetFace>();
+  for (const face of manifest.faces) facesByKey.set(templateKey(face.template), face);
+  const masks = analyseAdjacency8(objects).masks;
+  const scale = manifest.scale > 0 ? manifest.scale : 1;
+  const tileWidth = manifest.projection.tileWidthPixels;
+  const levelHeight = manifest.projection.levelHeightPixels;
+
+  return objects.map((object, index) => {
+    const face = facesByKey.get(templateKey(object));
+    if (!face) return null;
+    const faceSprites = sprites.get(face.slug);
+    if (!faceSprites) return null;
+    const configId = `c${openCornerNormalize(masks[index] & 0xff).toString(16).padStart(2, '0')}`;
+    const image = faceSprites.get(configId);
+    const sprite = face.sprites[configId];
+    if (!image || !sprite) return null; // partial tileset: fall back to grey
+    const turns = face.directional ? (((object.rotation % 4) + 4) % 4) : 0;
+    const [anchorX, anchorY] = rotateAnchor(sprite.anchorX * scale, sprite.anchorY * scale, image.width, image.height, turns);
+    return { image: rotateSprite(image, turns), anchorX, anchorY, tileWidth, levelHeight, scale };
+  });
 }
 
 // ── Export: render the 47 template sprites per face ───────────────────────────

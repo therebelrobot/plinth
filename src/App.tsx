@@ -450,6 +450,7 @@ export function App() {
               onCombinatorics={(set) => history.commit((current) => ({ ...current, combinatorics: set }))}
               onPalette={(palette) => history.commit((current) => ({ ...current, palette }))}
               onColorSettings={(colorSettings) => history.commit((current) => ({ ...current, colorSettings }))}
+              onTileset={(ref) => history.commit((current) => ({ ...current, tileset: ref }))}
             />
           )}
         </div>
