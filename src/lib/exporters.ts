@@ -1,10 +1,13 @@
+stdout:
+;
 // Turning renders into files the user can save or send to Procreate.
 
 import { colorActive } from '../core/color';
 import { buildCombinatorics, type CombinatoricsOptions } from '../core/combinatorics';
-import { composeColorImage, composeImage, composeLayers, upscale, type TilesetPlacement } from '../core/compose';
+import { composeColorImage, composeCutawayLayers, composeImage, composeLayers, upscale, type TilesetPlacement } from '../core/compose';
 import { PRIMITIVE_PRESETS, DIRECTIONAL_TYPES } from '../core/primitives';
 import { encodePsd } from '../core/psd';
+import { sceneProjection } from '../core/projection';
 import { renderPrimitive, renderScene } from '../core/render';
 import type { RenderOptions, Rotation, SceneDocument, SceneObject } from '../core/types';
 import { createZip, type ZipEntry } from '../core/zip';
@@ -79,14 +82,26 @@ export async function exportScenePng(document: SceneDocument, options: RenderOpt
   return { blob, filename: `${slug(document.name)}${scale > 1 ? `@${scale}x` : ''}.png` };
 }
 
-export function exportScenePsd(document: SceneDocument, options: RenderOptions, scale: number, tileset?: (TilesetPlacement | null)[]): { blob: Blob; filename: string } {
-  const buffers = renderScene(document.settings, document.objects, options, document.combinatorics);
+/**
+ * `cutaway` (default) emits one layer per cut level, as differences against the
+ * previous cut, so hiding layers from the top down reproduces the editor's
+ * cutaway. `levels` is the original floor / grid / per-base-level / outlines
+ * split, where each layer holds only the pixels that level won.
+ */
+export function exportScenePsd(
+  document: SceneDocument,
+  options: RenderOptions,
+  scale: number,
+  tileset?: (TilesetPlacement | null)[],
+  mode: 'cutaway' | 'levels' = 'cutaway',
+): { blob: Blob; filename: string } {
   const palette = colorActive(document) ? document.palette : undefined;
-  const layers = composeLayers(buffers, options, document.settings, palette, document.colorSettings, tileset).map((layer) => ({
-    ...layer,
-    rgba: upscale(layer.rgba, buffers.width, buffers.height, scale),
-  }));
-  const bytes = encodePsd(buffers.width * scale, buffers.height * scale, layers);
+  const { width, height } = sceneProjection(document.settings);
+  const layers = mode === 'cutaway'
+    ? composeCutawayLayers(document.settings, document.objects, options, document.combinatorics, palette, document.colorSettings, tileset)
+    : composeLayers(renderScene(document.settings, document.objects, options, document.combinatorics), options, document.settings, palette, document.colorSettings, tileset);
+  const scaled = layers.map((layer) => ({ ...layer, rgba: upscale(layer.rgba, width, height, scale) }));
+  const bytes = encodePsd(width * scale, height * scale, scaled);
   return {
     blob: new Blob([bytes as BlobPart], { type: 'image/vnd.adobe.photoshop' }),
     filename: `${slug(document.name)}${scale > 1 ? `@${scale}x` : ''}.psd`,

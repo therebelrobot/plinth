@@ -1,3 +1,5 @@
+stdout:
+;
 // Shared data model. Pure TypeScript — no DOM — so the renderer runs in the
 // browser and in node tests identically.
 //
@@ -105,6 +107,19 @@ export interface ColorSettings {
   outlineColor?: string;
   /** Floor colour; defaults to the palette's shared shadow. */
   floorColor?: string;
+  /**
+   * Feature 7 — which palette slots are used, and in which role. Absent means
+   * every slot, first as the shared shadow and last as the shared highlight
+   * (the derived default, unchanged).
+   */
+  swatchUse?: {
+    /** Palette indices that participate, in the order ramps are built from them. */
+    used?: number[];
+    /** Palette index used as the shared shadow. */
+    shadowIndex?: number;
+    /** Palette index used as the shared highlight. */
+    highlightIndex?: number;
+  };
 }
 
 /**

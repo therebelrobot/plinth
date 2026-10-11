@@ -1,5 +1,7 @@
+stdout:
+;
 import { useEffect, useMemo, useState } from 'react';
-import { parseRampartPalette, sharedShadow } from '../core/color';
+import { parseRampartFile, sharedShadow } from '../core/color';
 import { parseCombinatorics, type CombinatoricsScheme } from '../core/combinatorics';
 import { composeImage, type TilesetPlacement } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
@@ -261,6 +263,7 @@ export function ExportPanel(props: {
   const [scale, setScale] = useState(1);
   const [scheme, setScheme] = useState<CombinatoricsScheme>('iso-4');
   const [pngColor, setPngColor] = useState(false);
+  const [psdLayers, setPsdLayers] = useState<'cutaway' | 'levels'>('cutaway');
   const [busy, setBusy] = useState<string | null>(null);
   const shareable = useMemo(() => canShareFiles(), []);
   const faceCount = useMemo(() => new Set(document.objects.map(faceKey)).size, [document.objects]);
@@ -352,8 +355,21 @@ export function ExportPanel(props: {
         />
       )}
       {exportButton({ label: 'PNG', make: () => exportScenePng(document, exportOptions, scale, pngColor, tilesetPlacements) })}
-      {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale, tilesetPlacements) })}
-      <p className="muted small">The PSD has floor, grid, one layer per level and lines as separate layers. Procreate opens it with layers intact. Cutaway is ignored on export.</p>
+      <Segmented<'cutaway' | 'levels'>
+        label="PSD layers"
+        value={psdLayers}
+        onChange={setPsdLayers}
+        options={[
+          { value: 'cutaway', label: 'Cutaway', title: 'One layer per cut level — hiding from the top down walks the viewer cutaway' },
+          { value: 'levels', label: 'By level', title: 'Floor, grid, one layer per base level, outlines' },
+        ]}
+      />
+      {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale, tilesetPlacements, psdLayers) })}
+      <p className="muted small">
+        {psdLayers === 'cutaway'
+          ? 'Cutaway layers are differences against the previous cut, so hiding them from the top down matches the viewer cutaway — each hidden layer reveals the surfaces underneath instead of leaving a hole. Procreate opens the PSD with layers intact.'
+          : 'Floor, grid, one layer per base level and lines as separate layers. Each level layer holds only the pixels that level wins, so hiding one leaves a hole rather than revealing what is behind it.'}
+      </p>
 
       <h3>Primitive in isolation</h3>
       <div className="field">
@@ -489,16 +505,17 @@ export function ExportPanel(props: {
       <div className="button-row">
         <label className="button">
           <Icon name="folder" size={16} /> Import palette
-          <input type="file" accept="application/json,.json" hidden onChange={async (event) => {
+          <input type="file" accept=".json,.swatches,.gpl,.hex,application/json" hidden onChange={async (event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
             if (!file) return;
             try {
               const warnings: string[] = [];
-              const palettes = parseRampartPalette(await file.text(), (message) => warnings.push(message));
+              const palettes = parseRampartFile(new Uint8Array(await file.arrayBuffer()), file.name, (message) => warnings.push(message));
               const palette = palettes[0];
               props.onPalette(palette);
               setColorSettings({ enabled: true });
+              if (palettes.length > 1) warnings.push(`${palettes.length} palettes in the file — imported "${palette.name}"`);
               notify(`Imported palette "${palette.name}" (${palette.colors.length} colours)${warnings.length ? ` — ${warnings.join('; ')}` : ''}`);
             } catch (error) {
               notify(`Import failed: ${(error as Error).message}`);
@@ -514,10 +531,29 @@ export function ExportPanel(props: {
       {document.palette && (
         <>
           <div className="swatches">
-            {document.palette.colors.map((color, index) => (
-              <span key={`${color}-${index}`} className="swatch" style={{ background: color }} title={color} />
-            ))}
+            {document.palette.colors.map((color, index) => {
+              const used = document.colorSettings?.swatchUse?.used;
+              const isUsed = !used || used.includes(index);
+              return (
+                <button
+                  key={`${color}-${index}`}
+                  type="button"
+                  className="swatch"
+                  style={{ background: color, opacity: isUsed ? 1 : 0.25 }}
+                  title={isUsed ? `${color} — used (click to exclude)` : `${color} — excluded (click to include)`}
+                  aria-pressed={isUsed}
+                  onClick={() => {
+                    const base = used ?? document.palette!.colors.map((_, position) => position);
+                    const next = base.includes(index)
+                      ? base.filter((position) => position !== index)
+                      : [...base, index].sort((first, second) => first - second);
+                    setColorSettings({ swatchUse: { ...document.colorSettings?.swatchUse, used: next } });
+                  }}
+                />
+              );
+            })}
           </div>
+          <p className="muted small">Click a swatch to exclude it from the ramps. Excluded slots are skipped when the ramps are built.</p>
           <Toggle label="Colour base layer" hint="adds a Base color layer to PSD/PNG exports" checked={Boolean(document.colorSettings?.enabled)} onChange={(enabled) => setColorSettings({ enabled })} />
           <Segmented<ColorSettings['assign']>
             label="Assign ramps"
@@ -530,6 +566,26 @@ export function ExportPanel(props: {
             ]}
           />
           <NumberField label="Ramp size" value={document.colorSettings?.rampSize ?? Math.max(1, document.palette.colors.length - 2)} step={1} min={1} max={Math.max(1, document.palette.colors.length)} onChange={(rampSize) => setColorSettings({ rampSize })} />
+          <div className="grid-2">
+            <label className="field">
+              <span className="field-label">Shadow slot</span>
+              <select
+                value={document.colorSettings?.swatchUse?.shadowIndex ?? 0}
+                onChange={(event) => setColorSettings({ swatchUse: { ...document.colorSettings?.swatchUse, shadowIndex: Number(event.target.value) } })}
+              >
+                {document.palette.colors.map((color, index) => <option key={`shadow-${color}-${index}`} value={index}>{index}: {color}</option>)}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">Highlight slot</span>
+              <select
+                value={document.colorSettings?.swatchUse?.highlightIndex ?? document.palette.colors.length - 1}
+                onChange={(event) => setColorSettings({ swatchUse: { ...document.colorSettings?.swatchUse, highlightIndex: Number(event.target.value) } })}
+              >
+                {document.palette.colors.map((color, index) => <option key={`highlight-${color}-${index}`} value={index}>{index}: {color}</option>)}
+              </select>
+            </label>
+          </div>
           <div className="grid-2">
             <label className="field">
               <span className="field-label">Outline</span>

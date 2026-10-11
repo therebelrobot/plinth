@@ -1,9 +1,11 @@
+stdout:
+;
 // Turns render buffers into pixels: grey values per shading mode, then the
 // composite image or separate layers (for PSD export).
 
 import { colorForBand, hexToRgb, sharedShadow } from './color';
-import { OWNER_FLOOR, OWNER_NONE, objectScreenAnchor, type RenderBuffers } from './render';
-import type { ColorSettings, Palette, RenderOptions, SceneSettings } from './types';
+import { OWNER_FLOOR, OWNER_NONE, objectScreenAnchor, renderScene, type RenderBuffers } from './render';
+import type { ColorSettings, CombinatoricsSet, Palette, RenderOptions, SceneObject, SceneSettings } from './types';
 
 // Light from upper-left-front. In this projection the +y face is the visible
 // left face and +x the right face, so with this vector a block reads as
@@ -182,8 +184,8 @@ export function composeColorImage(
   const { width, height } = buffers;
   const rgba = new Uint8ClampedArray(width * height * 4);
   const background = backgroundGrey(options);
-  const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette));
-  const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette));
+  const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette, colorSettings));
+  const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette, colorSettings));
   for (let index = 0; index < width * height; index++) {
     // Feature 10 precedence: tileset > rampart colour. An opaque sprite pixel
     // replaces the palette colour; a transparent pixel keeps the colour.
@@ -278,8 +280,8 @@ export function composeLayers(
   // where empty so it sits above the Background layer without duplicating it.
   if (palette && colorSettings?.enabled) {
     const base = new Uint8ClampedArray(size * 4);
-    const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette));
-    const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette));
+    const outlineRgb = hexToRgb(colorSettings.outlineColor ?? sharedShadow(palette, colorSettings));
+    const floorRgb = hexToRgb(colorSettings.floorColor ?? sharedShadow(palette, colorSettings));
     let hasBase = false;
     for (let index = 0; index < size; index++) {
       // Feature 10 precedence: an opaque tileset sprite pixel wins over the palette
@@ -323,6 +325,79 @@ export function composeLayers(
     layers.push({ name: `Level ${level}`, rgba: levelLayers.get(level)! });
   });
   if (hasOutline) layers.push({ name: 'Outlines', rgba: outline });
+  return layers;
+}
+
+
+/**
+ * Layers for PSD export that reproduce the editor's cutaway exactly.
+ *
+ * Layer `k` holds every pixel that becomes visible once the objects based above
+ * level `k − 1` are removed — the difference between the cutaway render at `k`
+ * and the one at `k − 1`. Composited normally, hiding layers from the top down
+ * walks the viewer's cutaway: hiding `level 3` and everything above leaves
+ * exactly the render for `hideAboveLevel = 2`, with the surfaces underneath
+ * recomputed rather than left as a hole.
+ *
+ * Trade-off against `composeLayers`: this costs one rasterisation per cut level,
+ * and no single layer is a complete picture of the scene.
+ */
+export function composeCutawayLayers(
+  settings: SceneSettings,
+  objects: SceneObject[],
+  options: RenderOptions,
+  combinatorics?: CombinatoricsSet,
+  palette?: Palette,
+  colorSettings?: ColorSettings,
+  tileset?: (TilesetPlacement | null)[],
+): ImageLayer[] {
+  // The Background layer is composed separately, so the cutaway renders must not
+  // bake it in — an opaque background in every layer would make hiding a no-op.
+  const layerOptions: RenderOptions = { ...options, background: 'transparent' };
+
+  // `isVisible` keeps an object when `z < hideAboveLevel + 1`, so this is the
+  // smallest cutaway that shows every object. Visibility keys off the object's
+  // *base*, so a tall block does not need a layer per level it spans.
+  let highest = 0;
+  for (const object of objects) highest = Math.max(highest, object.z);
+  const lastCut = Math.max(0, Math.ceil(highest - 1 + 1e-6));
+
+  const owners: Int32Array[] = [];
+  const images: Uint8ClampedArray[] = [];
+  for (let cut = 0; cut <= lastCut; cut++) {
+    const buffers = renderScene(settings, objects, { ...layerOptions, hideAboveLevel: cut }, combinatorics);
+    owners.push(buffers.owner);
+    images.push(palette && colorSettings?.enabled
+      ? composeColorImage(buffers, layerOptions, settings, palette, colorSettings, tileset)
+      : composeImage(buffers, layerOptions, settings, { tileset }));
+  }
+
+  const size = owners[0].length;
+  const layers: ImageLayer[] = [];
+
+  const background = backgroundGrey(options);
+  if (background >= 0) {
+    const rgba = new Uint8ClampedArray(size * 4);
+    for (let index = 0; index < size; index++) write(rgba, index, background);
+    layers.push({ name: 'Background', rgba });
+  }
+
+  for (let cut = 0; cut <= lastCut; cut++) {
+    const owner = owners[cut];
+    const previous = cut > 0 ? owners[cut - 1] : null;
+    const image = images[cut];
+    const delta = new Uint8ClampedArray(size * 4);
+    for (let index = 0; index < size; index++) {
+      if (owner[index] === OWNER_NONE) continue;                  // empty at this cut
+      if (previous && previous[index] === owner[index]) continue; // visible and unchanged since the last cut
+      const offset = index * 4;
+      delta[offset] = image[offset];
+      delta[offset + 1] = image[offset + 1];
+      delta[offset + 2] = image[offset + 2];
+      delta[offset + 3] = image[offset + 3];
+    }
+    layers.push({ name: `Cutaway · level ${cut}`, rgba: delta });
+  }
   return layers;
 }
 
