@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
-import { composeImage, type TilesetPlacement } from '../core/compose';
+import { composeColorImage, composeImage, type TilesetPlacement } from '../core/compose';
+import { colorActive } from '../core/color';
 import { buildTilesetPlacements, type TilesetSpriteSet } from '../core/tileset';
 import {
   isOccupiedBySame, objectAt, placementTarget, targetOnPlane, clampTarget,
@@ -130,13 +131,17 @@ export function Viewport(props: Props) {
     if (!canvas) return;
     canvas.width = buffers.width;
     canvas.height = buffers.height;
-    const rgba = composeImage(buffers, renderOptions, document.settings, {
+    const highlight = {
       highlightOwner: selectedIndex >= 0 ? selectedIndex : undefined,
       highlightColor: ACCENT_RGB,
-      tileset: tilesetPlacements,
-    });
+    };
+    // Feature 7 — same `colorActive` gate the exporters use, so the editor view
+    // and the PSD/PNG exports agree on when colour is applied.
+    const rgba = colorActive(document)
+      ? composeColorImage(buffers, renderOptions, document.settings, document.palette!, document.colorSettings!, tilesetPlacements, highlight)
+      : composeImage(buffers, renderOptions, document.settings, { ...highlight, tileset: tilesetPlacements });
     canvas.getContext('2d')!.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, buffers.width, buffers.height), 0, 0);
-  }, [buffers, renderOptions, document.settings, selectedIndex, tilesetPlacements]);
+  }, [buffers, renderOptions, document.settings, document.palette, document.colorSettings, selectedIndex, tilesetPlacements]);
 
   // ── View helpers ──────────────────────────────────────────────────────────
   const fit = useCallback(() => {

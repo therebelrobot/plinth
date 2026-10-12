@@ -1093,6 +1093,71 @@ New `test/color.test.ts` + `test/rampart-import.test.ts`:
   whole-document model ([`server/store.ts`](server/store.ts:22)).
 - **`localStorage` draft size:** unaffected materially.
 
+### 7(h) Follow-up — explicit value → colour map (`colorMode` / `bandColors`)
+
+Design: [`docs/plinth-swatch-mapping-design.md`](docs/plinth-swatch-mapping-design.md)
+(Option B, all recommended defaults). The ambiguous include/exclude grid is replaced by a
+two-column **value → colour** map, layered on top of the ramps rather than replacing them.
+
+**Data model (additive, optional — `SceneDocument.version` stays `1`)**
+
+```ts
+export interface ColorSettings {
+  // …existing fields retained…
+  /** 'ramps' (default when absent) = positional ramps; 'bands' = the map below wins. */
+  colorMode?: 'ramps' | 'bands';
+  /** Band index (0 = darkest) → `#rrggbb`. Missing/empty entry falls back to the ramp. */
+  bandColors?: string[];
+}
+```
+
+- Absent `colorMode` reads as `'ramps'` → byte-identical to today; no server change.
+- `bandColors` stores **hex**, not palette indices, so it survives a palette re-import.
+- All bands start `Auto` (no auto dark→light on import).
+- When `bands` shrinks, trailing `bandColors` entries are **retained** (non-destructive);
+  a later grow restores them. "Clear mapping" resets `bandColors` to `undefined`.
+
+**Core**
+
+- [`valueBands(bands)`](src/core/color.ts:340) — the `bands` object value greys, darkest →
+  lightest, as `#rrggbb`, reproducing the `OBJECT_RAMP` quantisation in
+  [`toneAt()`](src/core/compose.ts:36) exactly.
+- [`colorForBand()`](src/core/color.ts:361) gains a `bands` parameter. When
+  `colorMode === 'bands'` and `bandColors` is present, the band's mapped hex wins; a
+  missing/empty entry falls through to the positional ramp path for that band only.
+- [`colorAt()`](src/core/compose.ts:148) threads `options.bands` into `colorForBand`. The
+  [`colorActive()`](src/core/color.ts:356) gate and all consumer call sites (viewport, PNG,
+  PSD) are unchanged.
+
+**UI** ([`src/ui/Panels.tsx`](src/ui/Panels.tsx:59))
+
+- A `Colour from: [Ramps | Value map]` selector writes `colorMode`.
+- **Ramps mode** keeps the existing include/exclude grid, `Assign ramps`, `Ramp size` and
+  the Shadow/Highlight slot selects (unchanged).
+- **Value map mode** renders the two-column `ValueMapping`: LEFT the fixed `bands` values
+  (chip + band number + darkest/lightest tag + grey hex), a decorative `aria-hidden` arrow,
+  RIGHT a `SwatchSelect` per band — a trigger button showing the current choice that opens a
+  popover grid of real swatch buttons (`Auto (ramp)` plus every palette swatch as
+  `index: #rrggbb`). Bulk helpers `Auto-map dark→light` and `Clear mapping` are optional
+  accelerators; per-row pickers are the primary path.
+- **Deviation from the design (user-directed):** the design specified a native `<select>`
+  per band, but a native select cannot render colour, so the user could not see the swatches
+  they were choosing. The picker is therefore a small custom disclosure (trigger button +
+  popover grid). Accessibility is preserved (R5.2/R5.3/R5.9): the trigger is a button with
+  `aria-expanded`/`aria-controls`, options are real buttons with `aria-pressed`, Escape
+  closes and returns focus, the popover is fixed-positioned (the panel scroll container
+  would clip an absolute one) and flips above the trigger when there is no room below, and a
+  check glyph plus the hex text mean selection is never shown by colour alone (R5.4).
+  Targets are ≥24×24 CSS px; no div click handlers.
+- Trace layers stay greyscale; only the `Base color` layer is mapped. Object bands only
+  (Floor/Outline keep their dedicated pickers).
+
+**Tests** ([`test/color.test.ts`](test/color.test.ts:137)): `valueBands(4)` equals the
+expected greys and matches the rendered pixels; `colorMode: 'bands'` maps each band to the
+chosen hex regardless of object/`assign`/`rampSize`; a short `bandColors` falls back per
+missing band; absent/`'ramps'` is byte-identical; Outline overrides still win; the
+`colorActive` gate still suppresses the map under a combinatorics set.
+
 ---
 
 ## 8. Cross-feature interactions and sequencing
@@ -1138,10 +1203,27 @@ New `test/color.test.ts` + `test/rampart-import.test.ts`:
 - **F6:** Should the slope run along the wall's length (canonical y, this spec's choice) or
   across its thickness? Confirm partial-slope (shoulder) support is required or full-slope
   suffices for v1.
-- **F7:** rampart's `hexColors` is a flat ordered list with no explicit ramp boundaries.
-  Confirm how many slots form one ramp and how shared shadow/highlight are delimited, so the
-  default mapping is correct (this spec defaults to treating the list as one ramp and makes
-  it user-configurable).
+- **F7 (resolved):** rampart's `hexColors` is a flat ordered list with no explicit ramp
+  boundaries. Plinth reads the list as **shared shadow → each ramp dark→light → shared
+  highlight**: the shadow slot (`swatchUse.shadowIndex`, default 0) and the highlight slot
+  (`swatchUse.highlightIndex`, default last) are shared by every ramp, and the slots in
+  between are split into ramps of `rampSize` colours each (default: the whole middle list as
+  one ramp). `assign` (`cycle` / `byType` / `byLevel`) chooses which ramp an object uses
+  ([`src/core/color.ts`](src/core/color.ts:253)). The **viewport now renders this mapping**:
+  [`src/ui/Viewport.tsx`](src/ui/Viewport.tsx:128) branches to `composeColorImage` when
+  `colorActive(document)` is true — the same gate the exporters use — so the editor view and
+  the PSD/PNG exports agree. These controls live in the Colour (rampart) panel; per-object
+  ramp overrides and named gradient entities remain out of scope.
+- **F7 follow-up (outline/floor swatches):** when a palette is imported, the Colour (rampart)
+  panel no longer offers free colour pickers for **Outline** and **Floor**. Both render a
+  clickable swatch grid sourced from `Palette.colors`; clicking a swatch stores that `#rrggbb`
+  in `colorSettings.outlineColor` / `colorSettings.floorColor` (no schema change, no
+  palette-index storage). The current value is shown selected with a ring, a check glyph, and
+  `aria-pressed`, so selection is never conveyed by colour alone. When **no** palette is
+  imported, the free colour picker is kept as the fallback. The grid uses real buttons, is
+  keyboard-operable, and its targets are ≥24×24 CSS px (R5.2/R5.3/R5.9)
+  ([`src/ui/Panels.tsx`](src/ui/Panels.tsx:16)). Tests: [`test/color.test.ts`](test/color.test.ts:95)
+  asserts the chosen swatch hex reaches the composed outline and floor.
 
 ---
 

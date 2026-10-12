@@ -1,3 +1,5 @@
+stdout:
+;
 // Shared data model. Pure TypeScript — no DOM — so the renderer runs in the
 // browser and in node tests identically.
 //
@@ -105,6 +107,33 @@ export interface ColorSettings {
   outlineColor?: string;
   /** Floor colour; defaults to the palette's shared shadow. */
   floorColor?: string;
+  /**
+   * Feature 7 — which palette slots are used, and in which role. Absent means
+   * every slot, first as the shared shadow and last as the shared highlight
+   * (the derived default, unchanged).
+   */
+  swatchUse?: {
+    /** Palette indices that participate, in the order ramps are built from them. */
+    used?: number[];
+    /** Palette index used as the shared shadow. */
+    shadowIndex?: number;
+    /** Palette index used as the shared highlight. */
+    highlightIndex?: number;
+  };
+  /**
+   * Feature 7 follow-up — which mechanism paints object fills. `'ramps'` (the
+   * default when absent) is today's positional ramp behaviour; `'bands'` makes
+   * the explicit per-value map below authoritative. Additive and optional, so an
+   * absent value reads as `'ramps'` and old documents are byte-identical.
+   */
+  colorMode?: 'ramps' | 'bands';
+  /**
+   * Feature 7 follow-up — explicit map from value band index (0 = darkest) to a
+   * swatch colour, stored as `#rrggbb` (hex, not a palette index) so it survives
+   * a palette re-import. A missing or empty entry falls back to positional
+   * derivation for that band only. Absent = no explicit mapping.
+   */
+  bandColors?: string[];
 }
 
 /**

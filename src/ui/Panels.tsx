@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { parseRampartPalette, sharedShadow } from '../core/color';
+stdout:
+;
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { parseRampartFile, sharedShadow, valueBands } from '../core/color';
 import { parseCombinatorics, type CombinatoricsScheme } from '../core/combinatorics';
 import { composeImage, type TilesetPlacement } from '../core/compose';
 import { DIRECTIONAL_TYPES, LEVEL_CHANGING_TYPES, PARAMETER_SPECS, PRIMITIVE_PRESETS, TALL_VARIANTS, TYPE_LABELS, baseHeight, parameterOf, rotatedFootprint, tallVariantLabel } from '../core/primitives';
@@ -13,6 +15,295 @@ import {
 import { deleteTilesetSprites, exportTileset, importTileset, loadTilesetSprites, saveTilesetSprites } from '../lib/tileset';
 import { Icon } from './Icon';
 import { NumberField, Segmented, Toggle } from './Fields';
+
+// Feature 7 follow-up — Outline and Floor pick from the imported palette's
+// swatches instead of a free colour picker. Real buttons keep the grid
+// keyboard-operable (R5.3); `aria-pressed` plus a check glyph means selection is
+// never shown by colour alone (R5.2). The free picker is used only when no
+// palette is imported (see ScenePanel below).
+function SwatchPicker(props: {
+  label: string;
+  colors: string[];
+  value: string | undefined;
+  fallback: string;
+  onPick: (color: string) => void;
+}) {
+  const selected = (props.value ?? props.fallback).toLowerCase();
+  return (
+    <div className="field">
+      <span className="field-label">{props.label}</span>
+      <div className="swatches" role="group" aria-label={`${props.label} colour`}>
+        {props.colors.map((color, index) => {
+          const isSelected = color.toLowerCase() === selected;
+          return (
+            <button
+              key={`${props.label}-${index}-${color}`}
+              type="button"
+              className={`swatch swatch-pick${isSelected ? ' is-selected' : ''}`}
+              style={{ background: color }}
+              title={`${color} — slot ${index}`}
+              aria-label={`${props.label} colour, slot ${index}: ${color}`}
+              aria-pressed={isSelected}
+              onClick={() => props.onPick(color)}
+            >
+              <span className="swatch-check" aria-hidden="true">✓</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Feature 7 follow-up — a swatch dropdown. A native <select> cannot render
+// colour, so this is a small custom disclosure: a trigger button showing the
+// current choice, opening a popover grid of real swatch buttons. Keyboard and
+// screen-reader access are preserved (R5.3/R5.9): the trigger is a button with
+// aria-expanded/aria-controls, options are real buttons with aria-pressed,
+// Escape closes and returns focus, and a check glyph plus the hex text mean
+// selection is never shown by colour alone (R5.4). The popover is fixed-
+// positioned (the panel scroll container would otherwise clip it) and flips
+// above the trigger when there is no room below.
+function SwatchSelect(props: {
+  label: string;
+  colors: string[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { colors, value } = props;
+  const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverId = useId();
+
+  const computePlacement = () => {
+    const el = triggerRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    // Once the trigger has scrolled fully out of the viewport there is nothing
+    // to anchor to; callers may close the popover.
+    if (rect.bottom < 0 || rect.top > window.innerHeight) return null;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    const openUp = spaceBelow < 200 && spaceAbove > spaceBelow;
+    return {
+      top: openUp ? undefined : rect.bottom + 4,
+      bottom: openUp ? window.innerHeight - rect.top + 4 : undefined,
+      left: rect.left,
+      width: rect.width,
+      maxHeight: Math.max(120, Math.min(260, openUp ? spaceAbove : spaceBelow)),
+    };
+  };
+
+  const openPopover = () => {
+    const next = computePlacement();
+    if (!next) return;
+    setPlacement(next);
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    // Reposition on scroll instead of closing: the panel is itself a scroll
+    // container, so a capture-phase scroll listener would otherwise dismiss the
+    // popover as soon as the user scrolls it. Scrolls that originate *inside*
+    // the popover are ignored; only a trigger that has scrolled fully out of
+    // view closes the popover.
+    const onScroll = (event: Event) => {
+      if (popoverRef.current && event.target instanceof Node && popoverRef.current.contains(event.target)) return;
+      const next = computePlacement();
+      if (!next) {
+        setOpen(false);
+        return;
+      }
+      setPlacement(next);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [open]);
+
+  // Move focus into the popover when it opens, onto the selected option.
+  useEffect(() => {
+    if (!open) return;
+    const selected = popoverRef.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
+    const first = popoverRef.current?.querySelector<HTMLButtonElement>('button');
+    (selected ?? first)?.focus();
+  }, [open]);
+
+  const index = colors.findIndex((color) => color.toLowerCase() === value.toLowerCase());
+  const inPalette = !value || index >= 0;
+  const currentLabel = value ? (index >= 0 ? `${index}: ${value}` : value) : 'Auto (ramp)';
+
+  const choose = (next: string) => {
+    props.onChange(next);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  return (
+    <div className="swatch-select" ref={rootRef}>
+      <button
+        type="button"
+        ref={triggerRef}
+        className="swatch-select-trigger"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={open ? popoverId : undefined}
+        aria-label={props.label}
+        onClick={() => (open ? setOpen(false) : openPopover())}
+      >
+        <span className={`swatch-select-chip${value ? '' : ' is-auto'}`} style={value ? { background: value } : undefined} aria-hidden="true" />
+        <span className="swatch-select-text">{currentLabel}</span>
+        <span className="swatch-select-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && placement && (
+        <div
+          className="swatch-select-popover"
+          id={popoverId}
+          ref={popoverRef}
+          role="group"
+          aria-label={props.label}
+          style={{ top: placement.top, bottom: placement.bottom, left: placement.left, width: placement.width, maxHeight: placement.maxHeight }}
+        >
+          <button
+            type="button"
+            className={`swatch-select-option${value ? '' : ' is-selected'}`}
+            aria-pressed={!value}
+            onClick={() => choose('')}
+          >
+            <span className="swatch-select-chip is-auto" aria-hidden="true" />
+            <span className="swatch-select-option-text">Auto (ramp)</span>
+            <span className="swatch-select-check" aria-hidden="true">✓</span>
+          </button>
+          {colors.map((color, position) => {
+            const selected = color.toLowerCase() === value.toLowerCase();
+            return (
+              <button
+                key={`${position}-${color}`}
+                type="button"
+                className={`swatch-select-option${selected ? ' is-selected' : ''}`}
+                aria-pressed={selected}
+                onClick={() => choose(color)}
+              >
+                <span className="swatch-select-chip" style={{ background: color }} aria-hidden="true" />
+                <span className="swatch-select-option-text">{position}: {color}</span>
+                <span className="swatch-select-check" aria-hidden="true">✓</span>
+              </button>
+            );
+          })}
+          {!inPalette && value && (
+            <button
+              type="button"
+              className="swatch-select-option is-selected"
+              aria-pressed
+              onClick={() => choose(value)}
+            >
+              <span className="swatch-select-chip" style={{ background: value }} aria-hidden="true" />
+              <span className="swatch-select-option-text">{value} (not in palette)</span>
+              <span className="swatch-select-check" aria-hidden="true">✓</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Feature 7 follow-up — the two-column value → colour map. LEFT: the fixed
+// object value bands the colour path uses (from `valueBands`); RIGHT: a swatch
+// dropdown per band choosing a palette swatch or Auto. The band number, grey hex
+// and palette index are all text, so the mapping never relies on colour alone
+// (R5.4). Targets are ≥24×24 CSS px (R5.2). No div click handlers.
+function ValueMapping(props: {
+  bands: number;
+  colors: string[];
+  bandColors: string[] | undefined;
+  onChange: (bandColors: string[] | undefined) => void;
+}) {
+  const { bands, colors, bandColors } = props;
+  const greys = valueBands(bands);
+
+  // Persist as short as possible: trim trailing Auto entries, but keep any set
+  // tail entry so bands beyond the current count are retained (§3.1). An
+  // all-Auto map persists as absent.
+  const write = (next: string[]) => {
+    let end = next.length;
+    while (end > 0 && !next[end - 1]) end--;
+    const trimmed = next.slice(0, end);
+    props.onChange(trimmed.length > 0 ? trimmed : undefined);
+  };
+
+  const setBand = (index: number, value: string) => {
+    const next = [...(bandColors ?? [])];
+    while (next.length <= index) next.push('');
+    next[index] = value;
+    write(next);
+  };
+
+  // Convenience: evenly sample the palette (shadow → ramps → highlight) across
+  // the bands, so the ends are the shared shadow/highlight and the middle bands
+  // are middle-ramp colours.
+  const autoMap = () => {
+    const count = colors.length;
+    const next: string[] = [];
+    for (let band = 0; band < bands; band++) {
+      const position = bands > 1 ? Math.round((band * (count - 1)) / (bands - 1)) : 0;
+      next.push(colors[position] ?? colors[0] ?? '');
+    }
+    write(next);
+  };
+
+  return (
+    <div className="value-map" role="group" aria-label="Value to colour mapping">
+      <span className="value-map-head">Scene value</span>
+      <span className="value-map-head value-map-arrow" aria-hidden="true">→</span>
+      <span className="value-map-head">Swatch colour</span>
+      {greys.map((grey, band) => {
+        const current = bandColors?.[band] ?? '';
+        const tag = band === 0 ? ' · darkest' : band === bands - 1 ? ' · lightest' : '';
+        return (
+          <Fragment key={band}>
+            <span className="value-map-value">
+              <span className="value-map-chip" style={{ background: grey }} aria-hidden="true" />
+              <span className="value-map-label">{band + 1}{tag}</span>
+              <code className="value-map-hex">{grey}</code>
+            </span>
+            <span className="value-map-arrow" aria-hidden="true">→</span>
+            <span className="value-map-pick">
+              <SwatchSelect
+                label={`Band ${band + 1} (grey ${grey}) colour`}
+                colors={colors}
+                value={current}
+                onChange={(value) => setBand(band, value)}
+              />
+            </span>
+          </Fragment>
+        );
+      })}
+      <div className="button-row value-map-actions">
+        <button type="button" className="button" onClick={autoMap}>Auto-map dark→light</button>
+        <button type="button" className="button" onClick={() => props.onChange(undefined)}>Clear mapping</button>
+      </div>
+    </div>
+  );
+}
 
 // ── Object ──────────────────────────────────────────────────────────────────
 
@@ -261,6 +552,7 @@ export function ExportPanel(props: {
   const [scale, setScale] = useState(1);
   const [scheme, setScheme] = useState<CombinatoricsScheme>('iso-4');
   const [pngColor, setPngColor] = useState(false);
+  const [psdLayers, setPsdLayers] = useState<'cutaway' | 'levels'>('cutaway');
   const [busy, setBusy] = useState<string | null>(null);
   const shareable = useMemo(() => canShareFiles(), []);
   const faceCount = useMemo(() => new Set(document.objects.map(faceKey)).size, [document.objects]);
@@ -352,8 +644,21 @@ export function ExportPanel(props: {
         />
       )}
       {exportButton({ label: 'PNG', make: () => exportScenePng(document, exportOptions, scale, pngColor, tilesetPlacements) })}
-      {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale, tilesetPlacements) })}
-      <p className="muted small">The PSD has floor, grid, one layer per level and lines as separate layers. Procreate opens it with layers intact. Cutaway is ignored on export.</p>
+      <Segmented<'cutaway' | 'levels'>
+        label="PSD layers"
+        value={psdLayers}
+        onChange={setPsdLayers}
+        options={[
+          { value: 'cutaway', label: 'Cutaway', title: 'One layer per cut level — hiding from the top down walks the viewer cutaway' },
+          { value: 'levels', label: 'By level', title: 'Floor, grid, one layer per base level, outlines' },
+        ]}
+      />
+      {exportButton({ label: 'Layered PSD', make: () => exportScenePsd(document, exportOptions, scale, tilesetPlacements, psdLayers) })}
+      <p className="muted small">
+        {psdLayers === 'cutaway'
+          ? 'Cutaway layers are differences against the previous cut, so hiding them from the top down matches the viewer cutaway — each hidden layer reveals the surfaces underneath instead of leaving a hole. Procreate opens the PSD with layers intact.'
+          : 'Floor, grid, one layer per base level and lines as separate layers. Each level layer holds only the pixels that level wins, so hiding one leaves a hole rather than revealing what is behind it.'}
+      </p>
 
       <h3>Primitive in isolation</h3>
       <div className="field">
@@ -489,16 +794,17 @@ export function ExportPanel(props: {
       <div className="button-row">
         <label className="button">
           <Icon name="folder" size={16} /> Import palette
-          <input type="file" accept="application/json,.json" hidden onChange={async (event) => {
+          <input type="file" accept=".json,.swatches,.gpl,.hex,application/json" hidden onChange={async (event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
             if (!file) return;
             try {
               const warnings: string[] = [];
-              const palettes = parseRampartPalette(await file.text(), (message) => warnings.push(message));
+              const palettes = parseRampartFile(new Uint8Array(await file.arrayBuffer()), file.name, (message) => warnings.push(message));
               const palette = palettes[0];
               props.onPalette(palette);
               setColorSettings({ enabled: true });
+              if (palettes.length > 1) warnings.push(`${palettes.length} palettes in the file — imported "${palette.name}"`);
               notify(`Imported palette "${palette.name}" (${palette.colors.length} colours)${warnings.length ? ` — ${warnings.join('; ')}` : ''}`);
             } catch (error) {
               notify(`Import failed: ${(error as Error).message}`);
@@ -513,37 +819,120 @@ export function ExportPanel(props: {
       </div>
       {document.palette && (
         <>
-          <div className="swatches">
-            {document.palette.colors.map((color, index) => (
-              <span key={`${color}-${index}`} className="swatch" style={{ background: color }} title={color} />
-            ))}
-          </div>
           <Toggle label="Colour base layer" hint="adds a Base color layer to PSD/PNG exports" checked={Boolean(document.colorSettings?.enabled)} onChange={(enabled) => setColorSettings({ enabled })} />
-          <Segmented<ColorSettings['assign']>
-            label="Assign ramps"
-            value={document.colorSettings?.assign ?? 'cycle'}
-            onChange={(assign) => setColorSettings({ assign })}
+          <Segmented<NonNullable<ColorSettings['colorMode']>>
+            label="Colour from"
+            value={document.colorSettings?.colorMode ?? 'ramps'}
+            onChange={(colorMode) => setColorSettings({ colorMode })}
             options={[
-              { value: 'cycle', label: 'Cycle', title: 'One ramp per object, in placement order' },
-              { value: 'byType', label: 'By type', title: 'One ramp per primitive type' },
-              { value: 'byLevel', label: 'By level', title: 'One ramp per level' },
+              { value: 'ramps', label: 'Ramps', title: 'Positional ramps built from the palette slots' },
+              { value: 'bands', label: 'Value map', title: 'Map each value band to a swatch colour' },
             ]}
           />
-          <NumberField label="Ramp size" value={document.colorSettings?.rampSize ?? Math.max(1, document.palette.colors.length - 2)} step={1} min={1} max={Math.max(1, document.palette.colors.length)} onChange={(rampSize) => setColorSettings({ rampSize })} />
+          {(document.colorSettings?.colorMode ?? 'ramps') === 'ramps' ? (
+            <>
+              <div className="swatches">
+                {document.palette.colors.map((color, index) => {
+                  const used = document.colorSettings?.swatchUse?.used;
+                  const isUsed = !used || used.includes(index);
+                  return (
+                    <button
+                      key={`${color}-${index}`}
+                      type="button"
+                      className="swatch"
+                      style={{ background: color, opacity: isUsed ? 1 : 0.25 }}
+                      title={isUsed ? `${color} — used (click to exclude)` : `${color} — excluded (click to include)`}
+                      aria-pressed={isUsed}
+                      onClick={() => {
+                        const base = used ?? document.palette!.colors.map((_, position) => position);
+                        const next = base.includes(index)
+                          ? base.filter((position) => position !== index)
+                          : [...base, index].sort((first, second) => first - second);
+                        setColorSettings({ swatchUse: { ...document.colorSettings?.swatchUse, used: next } });
+                      }}
+                    />
+                  );
+                })}
+              </div>
+              <p className="muted small">Click a swatch to exclude it from the ramps. Excluded slots are skipped when the ramps are built.</p>
+              <p className="muted small">How the list becomes colours: <strong>Shadow slot</strong> is the shared darkest colour and <strong>Highlight slot</strong> is the shared lightest colour — every ramp uses both. The colours in between are split into ramps that run <strong>dark → light</strong>. <strong>Ramp size</strong> sets how many colours are in each ramp. <strong>Assign ramps</strong> picks which ramp a shape uses: Cycle goes in placement order, By type gives each shape its own ramp, and By level gives each height its own ramp.</p>
+              <Segmented<ColorSettings['assign']>
+                label="Assign ramps"
+                value={document.colorSettings?.assign ?? 'cycle'}
+                onChange={(assign) => setColorSettings({ assign })}
+                options={[
+                  { value: 'cycle', label: 'Cycle', title: 'One ramp per object, in placement order' },
+                  { value: 'byType', label: 'By type', title: 'One ramp per primitive type' },
+                  { value: 'byLevel', label: 'By level', title: 'One ramp per level' },
+                ]}
+              />
+              <NumberField label="Ramp size" value={document.colorSettings?.rampSize ?? Math.max(1, document.palette.colors.length - 2)} step={1} min={1} max={Math.max(1, document.palette.colors.length)} onChange={(rampSize) => setColorSettings({ rampSize })} />
+              <div className="grid-2">
+                <label className="field">
+                  <span className="field-label">Shadow slot</span>
+                  <select
+                    value={document.colorSettings?.swatchUse?.shadowIndex ?? 0}
+                    onChange={(event) => setColorSettings({ swatchUse: { ...document.colorSettings?.swatchUse, shadowIndex: Number(event.target.value) } })}
+                  >
+                    {document.palette.colors.map((color, index) => <option key={`shadow-${color}-${index}`} value={index}>{index}: {color}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span className="field-label">Highlight slot</span>
+                  <select
+                    value={document.colorSettings?.swatchUse?.highlightIndex ?? document.palette.colors.length - 1}
+                    onChange={(event) => setColorSettings({ swatchUse: { ...document.colorSettings?.swatchUse, highlightIndex: Number(event.target.value) } })}
+                  >
+                    {document.palette.colors.map((color, index) => <option key={`highlight-${color}-${index}`} value={index}>{index}: {color}</option>)}
+                  </select>
+                </label>
+              </div>
+            </>
+          ) : (
+            <>
+              <ValueMapping
+                bands={options.bands}
+                colors={document.palette.colors}
+                bandColors={document.colorSettings?.bandColors}
+                onChange={(bandColors) => setColorSettings({ bandColors })}
+              />
+              <p className="muted small">Each value band maps to a swatch colour, or <strong>Auto (ramp)</strong> to fall back to the ramp. The band count follows the <strong>Value bands</strong> control in the View panel. Bands beyond the current value count are kept but unused.</p>
+            </>
+          )}
           <div className="grid-2">
-            <label className="field">
-              <span className="field-label">Outline</span>
-              <input type="color" value={document.colorSettings?.outlineColor ?? sharedShadow(document.palette)} onChange={(event) => setColorSettings({ outlineColor: event.target.value })} />
-            </label>
-            <label className="field">
-              <span className="field-label">Floor</span>
-              <input type="color" value={document.colorSettings?.floorColor ?? sharedShadow(document.palette)} onChange={(event) => setColorSettings({ floorColor: event.target.value })} />
-            </label>
+            <SwatchPicker
+              label="Outline"
+              colors={document.palette.colors}
+              value={document.colorSettings?.outlineColor}
+              fallback={sharedShadow(document.palette, document.colorSettings)}
+              onPick={(outlineColor) => setColorSettings({ outlineColor })}
+            />
+            <SwatchPicker
+              label="Floor"
+              colors={document.palette.colors}
+              value={document.colorSettings?.floorColor}
+              fallback={sharedShadow(document.palette, document.colorSettings)}
+              onPick={(floorColor) => setColorSettings({ floorColor })}
+            />
           </div>
+          <p className="muted small">Outline and Floor come from the imported swatches. Click a swatch to use it for that layer.</p>
           {document.combinatorics && (
             <p className="muted small">A combinatorics set is imported, so colour is suppressed — the combinatorics surface map takes precedence.</p>
           )}
         </>
+      )}
+
+      {!document.palette && (
+        <div className="grid-2">
+          <label className="field">
+            <span className="field-label">Outline</span>
+            <input type="color" value={document.colorSettings?.outlineColor ?? '#000000'} onChange={(event) => setColorSettings({ outlineColor: event.target.value })} />
+          </label>
+          <label className="field">
+            <span className="field-label">Floor</span>
+            <input type="color" value={document.colorSettings?.floorColor ?? '#000000'} onChange={(event) => setColorSettings({ floorColor: event.target.value })} />
+          </label>
+        </div>
       )}
 
       <h3>Scene file</h3>
