@@ -120,6 +120,20 @@ export interface ColorSettings {
     /** Palette index used as the shared highlight. */
     highlightIndex?: number;
   };
+  /**
+   * Feature 7 follow-up — which mechanism paints object fills. `'ramps'` (the
+   * default when absent) is today's positional ramp behaviour; `'bands'` makes
+   * the explicit per-value map below authoritative. Additive and optional, so an
+   * absent value reads as `'ramps'` and old documents are byte-identical.
+   */
+  colorMode?: 'ramps' | 'bands';
+  /**
+   * Feature 7 follow-up — explicit map from value band index (0 = darkest) to a
+   * swatch colour, stored as `#rrggbb` (hex, not a palette index) so it survives
+   * a palette re-import. A missing or empty entry falls back to positional
+   * derivation for that band only. Absent = no explicit mapping.
+   */
+  bandColors?: string[];
 }
 
 /**

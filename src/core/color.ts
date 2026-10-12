@@ -332,14 +332,51 @@ export function bandToRampSlot(fraction: number, size: number): number {
   return Math.min(size - 1, Math.max(0, Math.round(fraction * (size - 1))));
 }
 
-/** The `#rrggbb` colour for an object at a given Lambert band fraction. */
+/**
+ * Feature 7 follow-up — the object value ramp bounds, mirroring `OBJECT_RAMP` in
+ * [`src/core/compose.ts`](src/core/compose.ts:19). Kept here (rather than imported)
+ * so `color.ts` does not depend on `compose.ts`, which imports this module.
+ */
+const OBJECT_VALUE_RAMP = [64, 232] as const;
+
+/**
+ * Feature 7 follow-up — the `bands` object value greys, darkest → lightest, as
+ * `#rrggbb`. Reproduces the `OBJECT_RAMP` quantisation in `toneAt()` exactly
+ * (same rounding) so the UI chip is the literal pixel value the colour path uses.
+ */
+export function valueBands(bands: number): string[] {
+  const count = Math.max(1, Math.floor(bands));
+  const greys: string[] = [];
+  for (let band = 0; band < count; band++) {
+    const fraction = count > 1 ? band / (count - 1) : 1;
+    const grey = Math.round(OBJECT_VALUE_RAMP[0] + (OBJECT_VALUE_RAMP[1] - OBJECT_VALUE_RAMP[0]) * fraction);
+    const channel = grey.toString(16).padStart(2, '0');
+    greys.push(`#${channel}${channel}${channel}`);
+  }
+  return greys;
+}
+
+/**
+ * The `#rrggbb` colour for an object at a given Lambert band fraction.
+ *
+ * Feature 7 follow-up — when `settings.colorMode === 'bands'` and an explicit
+ * `bandColors` map is present, the band's mapped hex wins. A missing or empty
+ * entry falls through to the positional ramp path for that band only. `bands`
+ * is `RenderOptions.bands`, used to recover the band index from the fraction.
+ */
 export function colorForBand(
   palette: Palette,
   settings: ColorSettings,
   object: SceneObject,
   objectIndex: number,
   fraction: number,
+  bands: number,
 ): string {
+  if (settings.colorMode === 'bands' && settings.bandColors?.length) {
+    const band = bandToRampSlot(fraction, bands);
+    const mapped = settings.bandColors[band];
+    if (mapped) return mapped;
+  }
   const ramps = resolveRamps(palette, settings);
   const size = rampSize(palette, settings);
   const ramp = Math.min(ramps.length - 1, Math.max(0, rampIndexForObject(object, objectIndex, palette, settings)));

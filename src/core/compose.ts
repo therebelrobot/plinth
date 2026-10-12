@@ -163,7 +163,7 @@ function colorAt(
   } else {
     const object = buffers.objects[owner];
     const fraction = bandFraction(buffers, index, options.bands);
-    rgb = hexToRgb(colorForBand(palette, colorSettings, object, owner, fraction));
+    rgb = hexToRgb(colorForBand(palette, colorSettings, object, owner, fraction, options.bands));
   }
   if (buffers.outline[index]) rgb = [outlineRgb[0], outlineRgb[1], outlineRgb[2]];
   return rgb;
@@ -172,6 +172,10 @@ function colorAt(
 /**
  * Feature 7 — like `composeImage` but writes real RGB per pixel from an
  * imported rampart palette. The greyscale trace path is untouched.
+ *
+ * `highlight` mirrors the editor-only tint `composeImage` accepts, so the
+ * viewport can keep its selection highlight in colour mode. It is optional;
+ * the export callers pass no highlight.
  */
 export function composeColorImage(
   buffers: RenderBuffers,
@@ -180,6 +184,7 @@ export function composeColorImage(
   palette: Palette,
   colorSettings: ColorSettings,
   tileset?: (TilesetPlacement | null)[],
+  highlight?: Pick<ComposeExtras, 'highlightOwner' | 'highlightColor'>,
 ): Uint8ClampedArray {
   const { width, height } = buffers;
   const rgba = new Uint8ClampedArray(width * height * 4);
@@ -200,6 +205,13 @@ export function composeColorImage(
       continue;
     }
     writeRgb(rgba, index, rgb);
+    if (highlight?.highlightOwner !== undefined && owner === highlight.highlightOwner && highlight.highlightColor) {
+      const offset = index * 4;
+      const [red, green, blue] = highlight.highlightColor;
+      rgba[offset] = (rgba[offset] * 0.45 + red * 0.55) | 0;
+      rgba[offset + 1] = (rgba[offset + 1] * 0.45 + green * 0.55) | 0;
+      rgba[offset + 2] = (rgba[offset + 2] * 0.45 + blue * 0.55) | 0;
+    }
   }
   return rgba;
 }
