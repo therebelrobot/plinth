@@ -1,5 +1,5 @@
 # ── Build ────────────────────────────────────────────────────────────────────
-FROM node:22-alpine AS build
+FROM node:22.23.4-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY . .
 RUN npm run build
 
 # ── Runtime: the bundled server + static client, no node_modules ─────────────
-FROM node:22-alpine
+FROM node:22.23.4-alpine
 LABEL org.opencontainers.image.source="https://github.com/therebelrobot/plinth"
 LABEL org.opencontainers.image.description="Isometric scene blocking for pixel art"
 LABEL org.opencontainers.image.licenses="Unlicense"
